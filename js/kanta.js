@@ -2,6 +2,7 @@ import { db, storage } from "./firebase-config.js";
 import {
   collection,
   doc,
+  deleteDoc,
   getDoc,
   getDocs,
   onSnapshot,
@@ -22,12 +23,35 @@ const mobileToggle = document.getElementById("mobileMenuToggle");
 const kantaTableBody = document.getElementById("kantaTableBody");
 const kantaCount = document.getElementById("kantaCount");
 const kantaMessage = document.getElementById("kantaMessage");
+const kantaProductFilter = document.getElementById("kantaProductFilter");
+const kantaLocationFilter = document.getElementById("kantaLocationFilter");
+const kantaSupplierFilter = document.getElementById("kantaSupplierFilter");
+const kantaDateFilter = document.getElementById("kantaDateFilter");
 const kantaDrawer = document.getElementById("kantaDrawer");
 const kantaDrawerBody = document.getElementById("kantaDrawerBody");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
 const closeKantaDrawer = document.getElementById("closeKantaDrawer");
 
 let pendingEntries = [];
+
+function filterValue(record, keyOptions) {
+  return String(valueOf(record, ...keyOptions) || "").trim();
+}
+
+function matchesDate(record, selectedDate) {
+  if (!selectedDate) return true;
+  const date = dateOf(record);
+  if (!date) return false;
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  return localDate === selectedDate;
+}
+
+function setFilterOptions(select, entries, keyOptions, label) {
+  const currentValue = select.value;
+  const values = [...new Set(entries.map((entry) => filterValue(entry, keyOptions)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  select.innerHTML = `<option value="">All ${label}</option>${values.map((value) => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
+  select.value = values.includes(currentValue) ? currentValue : "";
+}
 
 function escapeHTML(value) {
   return String(value ?? "—")
@@ -76,14 +100,20 @@ function documentLink(url) {
 }
 
 function renderRows() {
-  kantaCount.textContent = `${pendingEntries.length} record${pendingEntries.length === 1 ? "" : "s"}`;
+  const filteredEntries = pendingEntries.filter((entry) => (
+    (!kantaProductFilter.value || filterValue(entry, ["product", "product_name"]) === kantaProductFilter.value)
+    && (!kantaLocationFilter.value || filterValue(entry, ["receivingLocation", "receiving_location", "location"]) === kantaLocationFilter.value)
+    && (!kantaSupplierFilter.value || filterValue(entry, ["supplier", "supplier_name"]) === kantaSupplierFilter.value)
+    && matchesDate(entry, kantaDateFilter.value)
+  ));
+  kantaCount.textContent = `${filteredEntries.length} record${filteredEntries.length === 1 ? "" : "s"}`;
 
-  if (!pendingEntries.length) {
+  if (!filteredEntries.length) {
     kantaTableBody.innerHTML = `<tr><td class="empty-row" colspan="9">No records found</td></tr>`;
     return;
   }
 
-  kantaTableBody.innerHTML = pendingEntries.map((entry) => `
+  kantaTableBody.innerHTML = filteredEntries.map((entry) => `
     <tr>
       <td>${escapeHTML(dateText(entry))}</td>
       <td>${escapeHTML(valueOf(entry, "invoiceChallanNo", "invoice_challan_no", "invoice_no", "challan_no"))}</td>
@@ -96,6 +126,7 @@ function renderRows() {
       <td class="action-col">
         <div class="inline-actions">
           <button class="row-action" data-edit-id="${escapeHTML(entry.id)}" type="button">Edit</button>
+          <button class="row-action danger" data-delete-id="${escapeHTML(entry.id)}" type="button">Delete</button>
         </div>
       </td>
     </tr>
@@ -105,6 +136,27 @@ function renderRows() {
     button.addEventListener("click", () => {
       const entry = pendingEntries.find((item) => item.id === button.dataset.editId);
       if (entry) renderKantaEditor(entry);
+    });
+  });
+
+  kantaTableBody.querySelectorAll("[data-delete-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const entry = pendingEntries.find((item) => item.id === button.dataset.deleteId);
+      if (!entry || !window.confirm("Delete this pending Kanta record?")) return;
+
+      button.disabled = true;
+      button.textContent = "Deleting...";
+      try {
+        await deleteDoc(doc(db, "inward", entry.id));
+        kantaMessage.textContent = "Kanta record deleted successfully.";
+        kantaMessage.style.color = "var(--success)";
+      } catch (error) {
+        console.error("Unable to delete Kanta record.", error);
+        button.disabled = false;
+        button.textContent = "Delete";
+        kantaMessage.textContent = "Kanta record could not be deleted. Please check your connection and try again.";
+        kantaMessage.style.color = "var(--danger)";
+      }
     });
   });
 }
@@ -260,10 +312,17 @@ function renderKantaEditor(entry) {
 }
 
 const pendingQuery = query(collection(db, "inward"), where("status", "==", "KANTA PENDING"));
+kantaProductFilter.addEventListener("change", renderRows);
+kantaLocationFilter.addEventListener("change", renderRows);
+kantaSupplierFilter.addEventListener("change", renderRows);
+kantaDateFilter.addEventListener("change", renderRows);
 onSnapshot(pendingQuery, (snapshot) => {
   pendingEntries = snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
     .sort((a, b) => (dateOf(b)?.getTime() || 0) - (dateOf(a)?.getTime() || 0));
+  setFilterOptions(kantaProductFilter, pendingEntries, ["product", "product_name"], "products");
+  setFilterOptions(kantaLocationFilter, pendingEntries, ["receivingLocation", "receiving_location", "location"], "locations");
+  setFilterOptions(kantaSupplierFilter, pendingEntries, ["supplier", "supplier_name"], "suppliers");
   renderRows();
 }, (error) => {
   console.error("Unable to load Kanta pending records.", error);

@@ -244,6 +244,35 @@
         font-size: 0.82rem;
       }
 
+      .filter-toolbar {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 12px;
+        padding: 16px 22px;
+        border-bottom: 1px solid var(--border);
+        background: #f8fbff;
+      }
+
+      .filter-toolbar label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        color: var(--muted-strong);
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+
+      .filter-toolbar select,
+      .filter-toolbar input {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 10px;
+        background: #fff;
+        color: var(--text);
+      }
+
       .table-wrapper {
         overflow-x: auto;
       }
@@ -520,6 +549,7 @@
         .topbar { padding-left: 16px; padding-right: 16px; }
         .main-content { padding: 18px 16px 40px; }
         .page-header { flex-direction: column; align-items: flex-start; }
+        .filter-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
 
       @media (max-width: 560px) {
@@ -571,6 +601,13 @@
               <span class="table-count" id="kantaCount">0 records</span>
             </div>
             <p class="kanta-message" id="kantaMessage" role="status" aria-live="polite"></p>
+
+            <div class="filter-toolbar" aria-label="Kanta filters">
+              <label>Product<select id="kantaProductFilter"><option value="">All products</option></select></label>
+              <label>Location<select id="kantaLocationFilter"><option value="">All locations</option></select></label>
+              <label>Supplier<select id="kantaSupplierFilter"><option value="">All suppliers</option></select></label>
+              <label>Date<input id="kantaDateFilter" type="date" /></label>
+            </div>
 
             <div class="table-wrapper">
               <table class="erp-table" id="kantaTable">

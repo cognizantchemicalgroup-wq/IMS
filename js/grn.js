@@ -7,7 +7,8 @@ import {
   query,
   runTransaction,
   serverTimestamp,
-  where
+  where,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const sidebar = document.getElementById("sidebar");
@@ -15,6 +16,10 @@ const overlay = document.getElementById("mobileOverlay");
 const mobileToggle = document.getElementById("mobileMenuToggle");
 const grnTableBody = document.getElementById("grnTableBody");
 const grnCount = document.getElementById("grnCount");
+const grnProductFilter = document.getElementById("grnProductFilter");
+const grnLocationFilter = document.getElementById("grnLocationFilter");
+const grnSupplierFilter = document.getElementById("grnSupplierFilter");
+const grnDateFilter = document.getElementById("grnDateFilter");
 const grnDrawer = document.getElementById("grnDrawer");
 const grnDrawerBody = document.getElementById("grnDrawerBody");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
@@ -44,6 +49,25 @@ function dateText(record) {
   return date ? date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—";
 }
 
+function filterValue(record, keyOptions) {
+  return String(valueOf(record, ...keyOptions) || "").trim();
+}
+
+function matchesDate(record, selectedDate) {
+  if (!selectedDate) return true;
+  const date = dateOf(record);
+  if (!date) return false;
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  return localDate === selectedDate;
+}
+
+function setFilterOptions(select, entries, keyOptions, label) {
+  const currentValue = select.value;
+  const values = [...new Set(entries.map((entry) => filterValue(entry, keyOptions)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  select.innerHTML = `<option value="">All ${label}</option>${values.map((value) => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
+  select.value = values.includes(currentValue) ? currentValue : "";
+}
+
 function documentLink(url) {
   return url ? `<a class="row-action" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">View</a>` : `<span>Document not available</span>`;
 }
@@ -64,13 +88,19 @@ function kantaFor(entry) {
 }
 
 function renderRows() {
-  grnCount.textContent = `${pendingEntries.length} record${pendingEntries.length === 1 ? "" : "s"}`;
-  if (!pendingEntries.length) {
-    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="10">No records found</td></tr>`;
+  const filteredEntries = pendingEntries.filter((entry) => (
+    (!grnProductFilter.value || filterValue(entry, ["product", "product_name"]) === grnProductFilter.value)
+    && (!grnLocationFilter.value || filterValue(entry, ["receivingLocation", "receiving_location", "location"]) === grnLocationFilter.value)
+    && (!grnSupplierFilter.value || filterValue(entry, ["supplier", "supplier_name"]) === grnSupplierFilter.value)
+    && matchesDate(entry, grnDateFilter.value)
+  ));
+  grnCount.textContent = `${filteredEntries.length} record${filteredEntries.length === 1 ? "" : "s"}`;
+  if (!filteredEntries.length) {
+    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="11">No records found</td></tr>`;
     return;
   }
 
-  grnTableBody.innerHTML = pendingEntries.map((entry) => {
+  grnTableBody.innerHTML = filteredEntries.map((entry) => {
     const kanta = kantaFor(entry);
     const kantaQuantity = Number(valueOf(kanta || {}, "netWeight", "net_weight"));
     return `<tr>
@@ -82,8 +112,14 @@ function renderRows() {
       <td>${Number.isFinite(kantaQuantity) && kantaQuantity > 0 ? escapeHTML(kantaQuantity) : "—"}</td>
       <td>${documentLink(valueOf(entry, "coaFileUrl", "coa_file_url", "supplier_coa_path"))}</td>
       <td>${documentLink(valueOf(entry, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath"))}</td>
+      <td>${documentLink(valueOf(kanta || {}, "kantaSlipUrl", "kanta_slip_url"))}</td>
       <td><span class="status-tag warning">GRN PENDING</span></td>
-      <td class="action-col"><button class="row-action" data-edit-id="${escapeHTML(entry.id)}" type="button">Edit</button></td>
+      <td class="action-col">
+        <div class="inline-actions">
+          <button class="row-action" data-edit-id="${escapeHTML(entry.id)}" type="button">Edit</button>
+          <button class="row-action danger" data-delete-id="${escapeHTML(entry.id)}" type="button">Delete</button>
+        </div>
+      </td>
     </tr>`;
   }).join("");
 
@@ -91,6 +127,28 @@ function renderRows() {
     button.addEventListener("click", () => {
       const entry = pendingEntries.find((item) => item.id === button.dataset.editId);
       if (entry) renderEditor(entry);
+    });
+  });
+
+  grnTableBody.querySelectorAll("[data-delete-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const entry = pendingEntries.find((item) => item.id === button.dataset.deleteId);
+      const kanta = entry ? kantaFor(entry) : null;
+      if (!entry || !window.confirm("Delete this pending GRN record?")) return;
+
+      button.disabled = true;
+      button.textContent = "Deleting...";
+      try {
+        const batch = writeBatch(db);
+        batch.delete(doc(db, "inward", entry.id));
+        if (kanta) batch.delete(doc(db, "kanta", kanta.id));
+        await batch.commit();
+      } catch (error) {
+        console.error("Unable to delete GRN record.", error);
+        button.disabled = false;
+        button.textContent = "Delete";
+        window.alert("GRN record could not be deleted. Please check your connection and try again.");
+      }
     });
   });
 }
@@ -203,12 +261,16 @@ function renderEditor(entry) {
 }
 
 function listen() {
+  [grnProductFilter, grnLocationFilter, grnSupplierFilter, grnDateFilter].forEach((filter) => filter.addEventListener("change", renderRows));
   onSnapshot(query(collection(db, "inward"), where("status", "==", "GRN PENDING")), (snapshot) => {
     pendingEntries = snapshot.docs.map((item) => ({ id: item.id, ...item.data() })).sort((a, b) => (dateOf(b)?.getTime() || 0) - (dateOf(a)?.getTime() || 0));
+    setFilterOptions(grnProductFilter, pendingEntries, ["product", "product_name"], "products");
+    setFilterOptions(grnLocationFilter, pendingEntries, ["receivingLocation", "receiving_location", "location"], "locations");
+    setFilterOptions(grnSupplierFilter, pendingEntries, ["supplier", "supplier_name"], "suppliers");
     renderRows();
   }, (error) => {
     console.error("Unable to load GRN pending records.", error);
-    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="10">Unable to load records. Please refresh and try again.</td></tr>`;
+    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="11">Unable to load records. Please refresh and try again.</td></tr>`;
   });
   onSnapshot(collection(db, "kanta"), (snapshot) => {
     kantaRecords = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
