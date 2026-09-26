@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Receive Packaging Material - CCPL IMS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="css/packaging.css" />
+    <script src="js/receive-packaging.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo">CC</div>
+        <div class="brand-text"><span class="label">Company</span><span class="title">Cognizant Chemical Private Limited</span></div>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item active" href="packaging-stock.html" aria-current="page"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div><span class="eyebrow"><i class="fa-solid fa-box-open"></i> Packaging</span><h1>Receive Packaging Material</h1><p class="page-subtitle">Record packaging material returned by a customer</p></div>
+          <div class="header-actions"><a class="button" href="packaging-stock.html"><i class="fa-solid fa-arrow-left"></i> Packaging Stock</a></div>
+        </div>
+
+        <div class="success-banner" id="successBanner" role="status" aria-live="polite">
+          <i class="fa-solid fa-circle-check"></i><div><strong>Receipt saved for preview</strong><p id="successMessage">Your demo receipt is ready. No stock records were created.</p></div>
+        </div>
+
+        <form class="form-card" id="receiptForm" novalidate>
+          <section class="form-section" aria-labelledby="receiptInfoTitle">
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-clipboard-list"></i></span><div><h2 id="receiptInfoTitle">Receipt information</h2><p>Customer and reference details for this receipt</p></div></div>
+            <div class="form-grid">
+              <label class="field readonly-field"><span>Date &amp; Time</span><input id="receivedAt" type="text" readonly aria-readonly="true" /><i class="fa-regular fa-calendar"></i><small>Automatically filled at the time of entry</small></label>
+              <label class="field" id="customerField"><span>Customer <b aria-hidden="true">*</b></span><input id="customerInput" list="customerOptions" placeholder="Search or select a customer" autocomplete="off" /><datalist id="customerOptions"><option value="ABC Chemicals"></option><option value="XYZ Industries"></option><option value="Customer Demo"></option></datalist><span class="field-error" id="customerError"></span></label>
+              <label class="field"><span>Reference / Challan No.</span><input id="referenceInput" type="text" placeholder="e.g. CH-2026-0142" /></label>
+              <label class="field"><span>Remark</span><textarea id="remarkInput" placeholder="Add a note about this receipt"></textarea></label>
+            </div>
+          </section>
+
+          <section class="form-section" aria-labelledby="materialsTitle">
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><h2 id="materialsTitle">Packaging materials</h2><p>Add one or more materials included in this receipt</p></div></div>
+            <div class="material-table-wrap">
+              <table class="material-table">
+                <thead><tr><th>Packaging Material <b aria-hidden="true">*</b></th><th>Received Quantity <b aria-hidden="true">*</b></th><th>Unit <b aria-hidden="true">*</b></th><th><span class="sr-only">Remove</span></th></tr></thead>
+                <tbody id="materialRows"></tbody>
+              </table>
+              <div class="row-empty" id="rowsEmpty" hidden>No materials added yet. Use “Add row” to start this receipt.</div>
+            </div>
+            <div class="row-actions">
+              <button class="button" type="button" id="addRow"><i class="fa-solid fa-plus"></i> Add row</button>
+              <div class="add-material-inline" id="newMaterialPanel" hidden><input id="newMaterialInput" type="text" aria-label="New packaging material name" placeholder="New material name" /><button class="button button-primary" id="confirmAddMaterial" type="button">Add Material</button></div>
+              <button class="button" type="button" id="showAddMaterial"><i class="fa-solid fa-plus"></i> Add Material</button>
+            </div>
+            <datalist id="materialOptions"><option value="Empty Box"></option><option value="2.5 Litre Bottle"></option><option value="Thermocol"></option><option value="Box Plate"></option></datalist>
+          </section>
+
+          <div class="form-actions">
+            <a class="button" href="packaging-stock.html">Cancel</a>
+            <button class="button button-primary" type="submit"><i class="fa-solid fa-check"></i> Save Receipt</button>
+          </div>
+        </form>
+        <p class="demo-note"><i class="fa-solid fa-circle-info"></i> This is a UI preview. Saving displays a confirmation only; no receipt or stock data is stored.</p>
+      </div>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Packaging Configurations - CCPL IMS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="css/packaging.css" />
+    <link rel="stylesheet" href="css/packaging-workflow.css" />
+    <script src="js/packaging-configurations.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo">CC</div>
+        <div class="brand-text"><span class="label">Company</span><span class="title">Cognizant Chemical Private Limited</span></div>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item active" href="packaging-configurations.html" aria-current="page"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div><span class="eyebrow"><i class="fa-solid fa-list-check"></i> Packaging</span><h1>Packaging Configurations</h1><p class="page-subtitle">Define packaging requirements for each product and customer</p></div>
+          <div class="header-actions"><span class="header-badge"><i class="fa-solid fa-circle-check"></i> Recipe Setup</span><button class="button button-primary" type="button" id="createConfiguration"><i class="fa-solid fa-plus"></i> Create Configuration</button></div>
+        </div>
+        <section class="register-card" aria-labelledby="configurationsHeading">
+          <div class="register-header"><div><h2 id="configurationsHeading">Configuration List</h2><p>Demo recipes by customer and product</p></div><span class="config-count" id="configurationCount">1 configuration</span></div>
+          <div class="table-scroll">
+            <table class="stock-table configuration-table">
+              <thead><tr><th>Configuration</th><th>Customer</th><th>Product</th><th>Packaging Materials</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="configurationRows"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="configurationEmpty" hidden><span class="empty-icon"><i class="fa-solid fa-list-check"></i></span><h3>No configurations yet.</h3><p>Create a demo packaging recipe to preview it here.</p></div>
+          <div class="table-footer"><span id="configurationFooter">Demo configuration</span><span>Saved in page preview only</span></div>
+        </section>
+        <p class="demo-note"><i class="fa-solid fa-circle-info"></i> Recipes on this page are temporary UI demo data and are not shared with other pages.</p>
+      </div>
+    </main>
+    <div class="overlay" id="configurationOverlay"></div>
+    <aside class="workflow-drawer" id="configurationDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" tabindex="-1">
+      <div class="drawer-header"><div><span class="drawer-kicker">Packaging recipe</span><h2 id="drawerTitle">Configuration</h2></div><button class="icon-button" id="closeConfigurationIcon" type="button" aria-label="Close configuration"><i class="fa-solid fa-xmark"></i></button></div>
+      <div class="workflow-drawer-content">
+        <section id="configurationView" class="configuration-view" hidden></section>
+        <form id="configurationForm" class="configuration-form" novalidate hidden>
+          <div class="config-form-section">
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-clipboard-list"></i></span><div><h2>Configuration details</h2><p>Link this packaging recipe to a customer and product</p></div></div>
+            <div class="config-fields">
+              <label class="field" id="configurationNameField"><span>Configuration Name <b aria-hidden="true">*</b></span><input id="configurationName" type="text" placeholder="e.g. 2.5L Bottle Packing" /><span class="field-error" id="configurationNameError"></span></label>
+              <label class="field" id="configurationCustomerField"><span>Customer <b aria-hidden="true">*</b></span><select id="configurationCustomer"><option value="">Select customer</option><option>ABC Chemicals</option><option>XYZ Industries</option><option>Customer Demo</option></select><span class="field-error" id="configurationCustomerError"></span></label>
+              <label class="field" id="configurationProductField"><span>Product <b aria-hidden="true">*</b></span><select id="configurationProduct"><option value="">Select product</option><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select><span class="field-error" id="configurationProductError"></span></label>
+            </div>
+          </div>
+          <div class="config-form-section">
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><h2>Packaging requirements</h2><p>Materials needed to pack one box or unit</p></div></div>
+            <div class="workflow-table-wrap">
+              <table class="workflow-table">
+                <thead><tr><th>Packaging Material <b aria-hidden="true">*</b></th><th>Qty Per Box <b aria-hidden="true">*</b></th><th>Unit <b aria-hidden="true">*</b></th><th><span class="sr-only">Remove</span></th></tr></thead>
+                <tbody id="configurationMaterials"></tbody>
+              </table>
+            </div>
+            <div class="config-empty-row" id="configurationMaterialsEmpty" hidden>Add at least one packaging material.</div>
+            <span class="field-error config-materials-error" id="configurationMaterialsError"></span>
+            <button class="button config-add-row" id="addConfigurationMaterial" type="button"><i class="fa-solid fa-plus"></i> Add Material</button>
+            <datalist id="configurationMaterialOptions"><option value="Empty Box"></option><option value="2.5 Litre Bottle"></option><option value="Thermocol"></option><option value="Box Plate"></option></datalist>
+          </div>
+          <div class="workflow-form-actions"><button class="button" type="button" id="cancelConfiguration">Cancel</button><button class="button button-primary" type="submit"><i class="fa-solid fa-check"></i> Save Configuration</button></div>
+        </form>
+      </div>
+    </aside>
+  </body>
+</html>

@@ -18,6 +18,7 @@ const submitButton = form.querySelector("button[type=submit]");
 const receivedAs = document.getElementById("receivedAs");
 const invoiceUpload = document.getElementById("invoiceUpload");
 const supplierCoa = document.getElementById("supplierCoa");
+const poUpload = document.getElementById("poUpload");
 
 function showMessage(message, color = "var(--danger)") {
   formMessage.textContent = message;
@@ -36,44 +37,28 @@ function positiveNumber(id, label) {
   return valid ? value : { error: `${label} must be greater than 0.` };
 }
 
-function calculateQuantity() {
+function getDeclaredQuantity() {
   const type = receivedAs.value;
 
-  if (type === "drums") {
-    const containers = positiveNumber("totalDrums", "Total drums");
-    const quantity = positiveNumber("qtyPerDrum", "Quantity per drum");
-    if (typeof containers !== "number") return containers;
-    if (typeof quantity !== "number") return quantity;
-    const declaredQuantity = containers * quantity;
-    document.getElementById("totalDeclaredQty").value = declaredQuantity.toFixed(2);
-    return { declaredQuantity, unit: "kg", totalContainers: containers, qtyPerContainer: quantity };
-  }
-
-  if (type === "ibc") {
-    const containers = positiveNumber("noOfIbcs", "Number of IBCs");
-    const quantity = positiveNumber("qtyPerIbc", "Quantity per IBC");
-    if (typeof containers !== "number") return containers;
-    if (typeof quantity !== "number") return quantity;
-    const declaredQuantity = containers * quantity;
-    document.getElementById("calculatedQtyIbc").value = declaredQuantity.toFixed(2);
-    return { declaredQuantity, unit: "L", totalContainers: containers, qtyPerContainer: quantity };
-  }
-
-  if (type === "tanker") {
-    const quantity = positiveNumber("invoiceQty", "Tanker quantity");
-    const unit = document.getElementById("invoiceUnit");
-    const validUnit = Boolean(unit.value);
-    setFieldValidity(unit, validUnit);
-    if (typeof quantity !== "number") return quantity;
-    if (!validUnit) return { error: "Please select a tanker quantity unit." };
-    document.getElementById("calculatedQtyTanker").value = quantity.toFixed(2);
-    return { declaredQuantity: quantity, unit: unit.value, totalContainers: null, qtyPerContainer: null };
-  }
-
   if (type === "other") {
-    const quantity = positiveNumber("otherQuantity", "Quantity");
-    if (typeof quantity !== "number") return quantity;
-    return { declaredQuantity: quantity, unit: "Other", totalContainers: null, qtyPerContainer: null };
+    const receiveType = document.getElementById("otherReceiveType").value.trim();
+    const quantity = document.getElementById("otherDeclaredQty").value.trim();
+
+    if (!receiveType) return { error: "Please enter the receive type for Other." };
+    if (!quantity) return { error: "Please enter a total declared quantity for Other." };
+
+    return { declaredQuantity: quantity, unit: "Other", receiveType, totalContainers: null, qtyPerContainer: null };
+  }
+
+  if (["drums", "ibc", "tanker"].includes(type)) {
+    const mapped = {
+      drums: "drumsDeclaredQty",
+      ibc: "ibcDeclaredQty",
+      tanker: "tankerDeclaredQty"
+    };
+    const quantity = document.getElementById(mapped[type]).value.trim();
+    if (!quantity) return { error: "Please enter a total declared quantity." };
+    return { declaredQuantity: quantity, unit: "Qty", receiveType: type, totalContainers: null, qtyPerContainer: null };
   }
 
   return { error: "Please select how the material was received." };
@@ -139,23 +124,18 @@ async function deleteUploadedFiles(uploadedRefs) {
 function resetForm() {
   form.reset();
   receivedAs.dispatchEvent(new Event("change"));
-  document.getElementById("totalDeclaredQty").value = "";
-  document.getElementById("calculatedQtyIbc").value = "";
-  document.getElementById("calculatedQtyTanker").value = "";
+  document.getElementById("drumsDeclaredQty").value = "";
+  document.getElementById("ibcDeclaredQty").value = "";
+  document.getElementById("tankerDeclaredQty").value = "";
+  document.getElementById("otherDeclaredQty").value = "";
+  document.getElementById("otherReceiveType").value = "";
   document.getElementById("invoiceFileName").textContent = "No file selected";
   document.getElementById("coaFileName").textContent = "No file selected";
+  document.getElementById("poFileName").textContent = "No file selected";
   form.querySelectorAll("input, select").forEach((field) => {
     field.style.borderColor = "var(--border)";
   });
 }
-
-["calculateDrumsBtn", "calculateIbcBtn", "calculateTankerBtn"].forEach((id) => {
-  document.getElementById(id).addEventListener("click", () => {
-    const result = calculateQuantity();
-    if (result.error) showMessage(result.error);
-    else showMessage(`Calculated quantity: ${result.declaredQuantity} ${result.unit}.`, "var(--success)");
-  });
-});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -163,7 +143,7 @@ form.addEventListener("submit", async (event) => {
   showMessage("");
 
   if (!validateRequiredFields()) return;
-  const quantity = calculateQuantity();
+  const quantity = getDeclaredQuantity();
   if (quantity.error) {
     showMessage(quantity.error);
     return;
@@ -171,14 +151,20 @@ form.addEventListener("submit", async (event) => {
 
   const invoiceFile = invoiceUpload.files[0];
   const coaFile = supplierCoa.files[0];
+  const poFile = poUpload.files[0];
   const invoiceValidationError = validateFile(invoiceFile, "Invoice");
   const coaValidationError = validateFile(coaFile, "Supplier COA");
+  const poValidationError = validateFile(poFile, "PO");
   if (invoiceValidationError) {
     showMessage(invoiceValidationError);
     return;
   }
   if (coaValidationError) {
     showMessage(coaValidationError);
+    return;
+  }
+  if (poValidationError) {
+    showMessage(poValidationError);
     return;
   }
 
@@ -191,16 +177,26 @@ form.addEventListener("submit", async (event) => {
     product: document.getElementById("product").value,
     vehicleNo: document.getElementById("vehicleNo").value.trim(),
     invoiceChallanNo: document.getElementById("invoiceChallanNo").value.trim(),
+    industryType: document.getElementById("industryType").value.trim(),
+    industry_type: document.getElementById("industryType").value.trim(),
+    purchaseOrder: document.getElementById("purchaseOrder").value.trim(),
+    purchase_order: document.getElementById("purchaseOrder").value.trim(),
     receivingLocation: document.getElementById("receivingLocation").value,
     supplierLotNo: document.getElementById("supplierLotNo").value.trim(),
     receivedAs: receivedAs.value,
-    totalContainers: quantity.totalContainers,
-    qtyPerContainer: quantity.qtyPerContainer,
+    receiveType: quantity.receiveType || receivedAs.value,
+    receive_type: quantity.receiveType || receivedAs.value,
     declaredQuantity: quantity.declaredQuantity,
+    declared_quantity: quantity.declaredQuantity,
     unit: quantity.unit,
+    quantity_unit: quantity.unit,
     status: "KANTA PENDING",
     invoiceFileUrl: "",
+    invoice_file_url: "",
     coaFileUrl: "",
+    coa_file_url: "",
+    poFileUrl: "",
+    po_file_url: "",
     createdAt: serverTimestamp()
   };
 
@@ -218,10 +214,21 @@ form.addEventListener("submit", async (event) => {
 
     try {
       data.coaFileUrl = await uploadDocument(coaFile, "supplier-coa", inwardRef.id, uploadedRefs);
+      data.coa_file_url = data.coaFileUrl;
     } catch (error) {
       console.error("Supplier COA upload failed.", error);
       await deleteUploadedFiles(uploadedRefs);
       showMessage("Supplier COA upload failed.");
+      return;
+    }
+
+    try {
+      data.poFileUrl = await uploadDocument(poFile, "purchase-order", inwardRef.id, uploadedRefs);
+      data.po_file_url = data.poFileUrl;
+    } catch (error) {
+      console.error("PO upload failed.", error);
+      await deleteUploadedFiles(uploadedRefs);
+      showMessage("PO upload failed.");
       return;
     }
 

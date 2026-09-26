@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /packaging_stock/{document=**} {
+      allow read, write: if false;
+    }
+    match /packaging_receipts/{document=**} {
+      allow read, write: if false;
+    }
+    match /packaging_configurations/{document=**} {
+      allow read, write: if false;
+    }
+    match /packaging_transactions/{document=**} {
+      allow read, write: if false;
+    }
+    match /outward/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

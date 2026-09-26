@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inventory - Cognizant Chemical Private Limited</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+      :root {
+        --sidebar-bg: #0f172a;
+        --sidebar-alt: #111827;
+        --primary: #2563eb;
+        --primary-soft: #dbeafe;
+        --card: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --muted-strong: #475569;
+        --border: #e2e8f0;
+        --success: #16a34a;
+        --warning: #d97706;
+        --danger: #dc2626;
+        --shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: "Inter", sans-serif; background: #edf4fb; color: var(--text); }
+      a { text-decoration: none; }
+      button, input, select { font: inherit; }
+      .topbar {
+        position: fixed; top: 0; left: 0; right: 0; height: 82px; background: rgba(255,255,255,0.94); backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(148,163,184,0.2); box-shadow: 0 8px 18px rgba(15,23,42,0.04); z-index: 50;
+        display: flex; align-items: center; justify-content: space-between; padding: 0 28px 0 22px;
+      }
+      .brand-wrap { display: flex; align-items: center; min-width: 0; }
+      .brand-logo { flex: 0 0 46px; width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(135deg, var(--primary), #60a5fa); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; box-shadow: 0 12px 26px rgba(37,99,235,0.2); }
+      .brand-text { margin-left: 14px; display: flex; flex-direction: column; min-width: 0; }
+      .brand-text .label { font-size: 0.67rem; font-weight: 700; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+      .brand-text .title { font-size: clamp(1rem, 1.2vw, 1.38rem); font-weight: 800; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mobile-menu-toggle { display: none; width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--border); background: #fff; color: var(--text); align-items: center; justify-content: center; margin-right: 10px; cursor: pointer; }
+      .sidebar { position: fixed; left: 0; top: 82px; bottom: 0; width: 260px; background: linear-gradient(180deg, var(--sidebar-bg), var(--sidebar-alt)); color: #e2e8f0; padding: 22px 16px 28px; box-shadow: inset -1px 0 0 rgba(148,163,184,0.15); z-index: 40; transition: transform 0.3s ease; }
+      .nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .nav-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border-radius: 14px; color: #dfeafc; font-weight: 600; transition: background 0.2s ease, color 0.2s ease; }
+      .nav-item i { width: 18px; text-align: center; }
+      .nav-item:hover { background: rgba(148,163,184,0.08); color: #fff; }
+      .nav-item.active { background: linear-gradient(135deg, rgba(37,99,235,0.22), rgba(59,130,246,0.1)); border: 1px solid rgba(96,165,250,0.25); color: #fff; }
+      .main-panel { margin-left: 260px; padding-top: 82px; min-height: 100vh; }
+      .main-content { max-width: 1280px; margin: 0 auto; padding: 28px 24px 60px; }
+      .page-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
+      .eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; background: var(--primary-soft); color: var(--primary); border: 1px solid rgba(37,99,235,0.12); }
+      .page-header h1 { margin: 16px 0 0; font-size: 2.35rem; line-height: 1.15; }
+      .header-badge { display: inline-flex; align-items: center; gap: 9px; padding: 10px 14px; border-radius: 12px; background: #fff; border: 1px solid var(--border); color: var(--muted-strong); font-size: 0.8rem; font-weight: 600; box-shadow: var(--shadow); white-space: nowrap; }
+      .header-badge i { color: var(--success); font-size: 0.62rem; }
+      .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
+      .stat-card { background: #fff; border: 1px solid var(--border); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); }
+      .stat-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+      .stat-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+      .mini-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--primary-soft); color: var(--primary); display: flex; align-items: center; justify-content: center; }
+      .stat-value { margin: 0; font-size: 1.9rem; line-height: 1.2; font-weight: 800; }
+      .stat-note { display: block; margin-top: 7px; color: var(--muted); font-size: 0.75rem; }
+      .section { margin-top: 24px; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 0 0 14px; }
+      .section-heading h2 { margin: 0; font-size: 1.12rem; }
+      .section-heading p { margin: 4px 0 0; color: var(--muted); font-size: 0.8rem; }
+      .location-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+      .location-card { display: block; text-align: left; width: 100%; padding: 19px 20px; border: 1px solid var(--border); border-radius: 16px; background: #fff; box-shadow: var(--shadow); color: var(--text); cursor: pointer; transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease; }
+      .location-card:hover, .location-card:focus-visible { border-color: #93c5fd; transform: translateY(-2px); box-shadow: 0 16px 30px rgba(37,99,235,0.12); outline: none; }
+      .location-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+      .location-card-top i { color: var(--primary); background: var(--primary-soft); border-radius: 10px; width: 36px; height: 36px; display: grid; place-items: center; }
+      .location-card-top .fa-arrow-up-right-from-square { color: #94a3b8; background: transparent; width: auto; height: auto; }
+      .location-name { display: block; font-weight: 700; font-size: 0.96rem; }
+      .location-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 0.78rem; }
+      .location-total { display: block; margin-top: 4px; color: var(--text); font-size: 1.35rem; font-weight: 800; }
+      .location-total small { font-size: 0.75rem; color: var(--muted); font-weight: 600; }
+      .register-card { background: rgba(255,255,255,0.97); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
+      .register-header { padding: 20px 22px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; background: linear-gradient(135deg, #fff, #f4f8ff); }
+      .register-header h2 { margin: 0; font-size: 1.12rem; }
+      .register-header p { margin: 5px 0 0; color: var(--muted); font-size: 0.78rem; }
+      .search-wrap { position: relative; width: min(100%, 280px); flex: 0 1 280px; }
+      .search-wrap i { position: absolute; top: 50%; left: 13px; transform: translateY(-50%); color: #94a3b8; }
+      .search-wrap input { width: 100%; min-height: 42px; padding: 9px 12px 9px 38px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--text); font-size: 0.82rem; }
+      .filters { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)) auto; align-items: end; gap: 12px; padding: 16px 22px; border-bottom: 1px solid var(--border); }
+      .filter-field label { display: block; margin: 0 0 7px; color: var(--muted-strong); font-size: 0.72rem; font-weight: 700; }
+      .filter-field select { width: 100%; min-height: 40px; padding: 8px 32px 8px 11px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: var(--text); font-size: 0.8rem; }
+      .search-wrap input:focus, .filter-field select:focus { outline: 3px solid rgba(37,99,235,0.14); border-color: #93c5fd; }
+      .button { min-height: 40px; display: inline-flex; justify-content: center; align-items: center; gap: 8px; padding: 8px 13px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: var(--muted-strong); font-size: 0.8rem; font-weight: 700; cursor: pointer; transition: background 0.18s ease, border-color 0.18s ease; }
+      .button:hover { background: #f8fafc; border-color: #cbd5e1; }
+      .button-primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+      .button-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+      .table-scroll { overflow-x: auto; }
+      .inventory-table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
+      .inventory-table th { padding: 13px 16px; background: #f8fafc; color: var(--muted); font-size: 0.69rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+      .inventory-table td { padding: 15px 16px; border-top: 1px solid #edf1f6; color: var(--muted-strong); font-size: 0.8rem; }
+      .inventory-table tbody tr:hover { background: #f8fbff; }
+      .product-name { color: var(--text); font-weight: 700; }
+      .stock-number { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+      .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; font-size: 0.69rem; font-weight: 700; }
+      .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .status-in-stock { color: #15803d; background: #dcfce7; }
+      .status-low-stock { color: #b45309; background: #fef3c7; }
+      .status-out-of-stock { color: #b91c1c; background: #fee2e2; }
+      .view-button { border: 0; padding: 6px 10px; border-radius: 7px; background: #eff6ff; color: var(--primary); font-size: 0.76rem; font-weight: 700; cursor: pointer; }
+      .view-button:hover { background: #dbeafe; }
+      .empty-state { padding: 50px 20px; text-align: center; color: var(--muted); }
+      .empty-state[hidden] { display: none; }
+      .empty-icon { width: 52px; height: 52px; margin: 0 auto 14px; border-radius: 16px; display: grid; place-items: center; color: var(--primary); background: var(--primary-soft); font-size: 1.15rem; }
+      .empty-state h3 { margin: 0; color: var(--text); font-size: 0.98rem; }
+      .empty-state p { margin: 7px 0 0; font-size: 0.82rem; }
+      .table-footer { display: flex; justify-content: space-between; padding: 12px 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.74rem; }
+      .overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.48); opacity: 0; visibility: hidden; transition: opacity 0.22s ease, visibility 0.22s ease; z-index: 60; }
+      .overlay.active { opacity: 1; visibility: visible; }
+      .overlay.nav-active { z-index: 30; }
+      .stock-drawer { position: fixed; z-index: 70; top: 0; right: 0; bottom: 0; width: min(480px, 100%); overflow-y: auto; background: #f8fafc; box-shadow: -18px 0 42px rgba(15,23,42,0.18); transform: translateX(102%); transition: transform 0.28s ease; }
+      .stock-drawer.open { transform: translateX(0); }
+      .drawer-header { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 22px 24px; background: #fff; border-bottom: 1px solid var(--border); }
+      .drawer-kicker { color: var(--primary); font-size: 0.68rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+      .drawer-header h2 { margin: 6px 0 0; font-size: 1.3rem; }
+      .icon-button { width: 38px; height: 38px; flex: 0 0 38px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--muted-strong); cursor: pointer; }
+      .icon-button:hover { background: #f1f5f9; }
+      .drawer-content { padding: 20px 24px 32px; }
+      .detail-card, .drawer-section { margin-bottom: 16px; padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: 0 6px 18px rgba(15,23,42,0.04); }
+      .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }
+      .detail-label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 0.69rem; }
+      .detail-value { color: var(--text); font-size: 0.82rem; font-weight: 700; }
+      .drawer-section h3 { margin: 0 0 15px; font-size: 0.91rem; }
+      .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .summary-item { padding: 12px; border-radius: 10px; background: #f8fafc; }
+      .summary-item .detail-value { font-size: 0.95rem; }
+      .movement-list { list-style: none; margin: 0; padding: 0; }
+      .movement-item { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 12px 0; border-top: 1px solid #edf1f6; }
+      .movement-item:first-child { padding-top: 0; border-top: 0; }
+      .movement-date { display: block; color: var(--muted); font-size: 0.69rem; }
+      .movement-ref { display: block; margin-top: 4px; color: var(--text); font-size: 0.8rem; font-weight: 700; }
+      .movement-qty { text-align: right; color: #15803d; font-size: 0.8rem; font-weight: 700; }
+      .movement-type { display: block; margin-top: 4px; color: var(--muted); font-size: 0.68rem; }
+      @media (max-width: 1024px) {
+        .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .location-grid { gap: 12px; }
+      }
+      @media (max-width: 820px) {
+        .mobile-menu-toggle { display: flex; }
+        .sidebar { transform: translateX(-100%); box-shadow: 12px 0 30px rgba(15,23,42,0.2); }
+        .sidebar.open { transform: translateX(0); }
+        .main-panel { margin-left: 0; }
+        .topbar { padding: 0 16px; }
+        .main-content { padding: 18px 16px 40px; }
+        .page-header { align-items: flex-start; }
+        .location-grid { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 560px) {
+        .brand-text .title { white-space: normal; max-width: 200px; font-size: 0.93rem; }
+        .brand-text .label { font-size: 0.6rem; }
+        .brand-logo { width: 40px; height: 40px; flex-basis: 40px; }
+        .page-header { flex-direction: column; }
+        .page-header h1 { font-size: 1.85rem; }
+        .stats-grid { gap: 10px; }
+        .stat-card { padding: 15px; }
+        .stat-value { font-size: 1.5rem; }
+        .mini-icon { width: 36px; height: 36px; }
+        .register-header { align-items: stretch; flex-direction: column; padding: 18px; }
+        .search-wrap { width: 100%; flex-basis: auto; }
+        .filters { grid-template-columns: 1fr 1fr; padding: 14px 18px; }
+        .filters .button { grid-column: 1 / -1; }
+        .inventory-table { min-width: 800px; }
+        .table-footer { gap: 10px; flex-direction: column; }
+        .drawer-header, .drawer-content { padding-left: 18px; padding-right: 18px; }
+      }
+    </style>
+    <script type="module" src="js/inventory.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo">CC</div>
+        <div class="brand-text"><span class="label">Company</span><span class="title">Cognizant Chemical Private Limited</span></div>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item active" href="inventory.html" aria-current="page"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div><span class="eyebrow"><i class="fa-solid fa-boxes-stacked"></i> Inventory</span><h1>Inventory Management</h1></div>
+          <div class="header-badge"><i class="fa-solid fa-circle"></i> Live Stock Overview</div>
+        </div>
+
+        <section class="stats-grid" aria-label="Inventory summary">
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Total Products</span><span class="mini-icon"><i class="fa-solid fa-boxes-stacked"></i></span></div><p class="stat-value" id="totalProducts">—</p><span class="stat-note">Across all locations</span></article>
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Total Stock</span><span class="mini-icon"><i class="fa-solid fa-scale-balanced"></i></span></div><p class="stat-value" id="totalStock">—</p><span class="stat-note">Combined quantity</span></article>
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Warehouse Locations</span><span class="mini-icon"><i class="fa-solid fa-warehouse"></i></span></div><p class="stat-value" id="totalLocations">—</p><span class="stat-note">Active stock locations</span></article>
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Low Stock Items</span><span class="mini-icon"><i class="fa-solid fa-triangle-exclamation"></i></span></div><p class="stat-value" id="lowStockItems">—</p><span class="stat-note">Based on a configurable 50-unit UI threshold</span></article>
+        </section>
+
+        <section class="section" aria-labelledby="locationHeading">
+          <div class="section-heading"><div><h2 id="locationHeading">Stock by Location</h2><p>Overview of products held at each location</p></div></div>
+          <div class="location-grid" id="locationGrid"></div>
+        </section>
+
+        <section class="section register-card" aria-labelledby="registerHeading">
+          <div class="register-header"><div><h2 id="registerHeading">Inventory Register</h2><p>Current stock by product and location</p></div><label class="search-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input id="inventorySearch" type="search" placeholder="Search product..." aria-label="Search product or location" /></label></div>
+          <div class="filters" aria-label="Inventory filters">
+            <div class="filter-field"><label for="locationFilter">Location</label><select id="locationFilter"><option value="">All Locations</option><option>Warehouse A</option><option>Warehouse B</option><option>Plant Store</option></select></div>
+            <div class="filter-field"><label for="unitFilter">Unit</label><select id="unitFilter"><option value="">All Units</option></select></div>
+            <div class="filter-field"><label for="statusFilter">Stock Status</label><select id="statusFilter"><option value="">All Status</option><option>In Stock</option><option>Low Stock</option><option>Out of Stock</option></select></div>
+            <button class="button" id="resetFilters" type="button"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+          </div>
+          <div class="table-scroll" id="tableScroll">
+            <table class="inventory-table">
+              <thead><tr><th>Product</th><th>Location</th><th>Current Stock</th><th>Unit</th><th>Stock Status</th><th>Last Updated</th><th>Action</th></tr></thead>
+              <tbody id="inventoryTableBody"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="emptyState" hidden><div class="empty-icon"><i class="fa-solid fa-box-open"></i></div><h3>No inventory records found</h3><p>Try changing your search or filters.</p></div>
+          <div class="table-footer"><span id="recordCount" aria-live="polite"></span><span id="inventoryConnection">Connecting to live stock</span></div>
+        </section>
+      </div>
+    </main>
+
+    <div class="overlay" id="overlay"></div>
+    <aside class="stock-drawer" id="stockDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" tabindex="-1">
+      <div class="drawer-header"><div><span class="drawer-kicker">Stock details</span><h2 id="drawerTitle">Product</h2></div><button class="icon-button" id="closeDrawer" type="button" aria-label="Close stock details"><i class="fa-solid fa-xmark"></i></button></div>
+      <div class="drawer-content">
+        <section class="detail-card" aria-label="Product details"><div class="detail-grid">
+          <div><span class="detail-label">Product</span><span class="detail-value" id="detailProduct"></span></div>
+          <div><span class="detail-label">Location</span><span class="detail-value" id="detailLocation"></span></div>
+          <div><span class="detail-label">Current Stock</span><span class="detail-value" id="detailStock"></span></div>
+          <div><span class="detail-label">Unit</span><span class="detail-value" id="detailUnit"></span></div>
+          <div><span class="detail-label">Created At</span><span class="detail-value" id="detailCreated"></span></div>
+          <div><span class="detail-label">Updated At</span><span class="detail-value" id="detailUpdated"></span></div>
+          <div><span class="detail-label">Last GRN</span><span class="detail-value" id="detailLastGrn"></span></div>
+        </div></section>
+        <section class="drawer-section"><h3>Stock Summary</h3><div class="summary-grid">
+          <div class="summary-item"><span class="detail-label">Total Received</span><span class="detail-value" id="summaryReceived"></span></div>
+          <div class="summary-item"><span class="detail-label">Total Issued</span><span class="detail-value" id="summaryIssued"></span></div>
+          <div class="summary-item"><span class="detail-label">Current Stock</span><span class="detail-value" id="summaryCurrent"></span></div>
+        </div></section>
+        <section class="drawer-section"><h3>Stock Movement</h3><ul class="movement-list" id="movementList"></ul></section>
+      </div>
+    </aside>
+  </body>
+</html>

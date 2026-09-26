@@ -12,6 +12,7 @@ import {
   writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
+  deleteObject,
   getDownloadURL,
   ref,
   uploadBytes
@@ -23,10 +24,15 @@ const mobileToggle = document.getElementById("mobileMenuToggle");
 const kantaTableBody = document.getElementById("kantaTableBody");
 const kantaCount = document.getElementById("kantaCount");
 const kantaMessage = document.getElementById("kantaMessage");
-const kantaProductFilter = document.getElementById("kantaProductFilter");
-const kantaLocationFilter = document.getElementById("kantaLocationFilter");
-const kantaSupplierFilter = document.getElementById("kantaSupplierFilter");
-const kantaDateFilter = document.getElementById("kantaDateFilter");
+const kantaSearchBy = document.getElementById("kantaSearchBy");
+const kantaSearchInput = document.getElementById("kantaSearchInput");
+const kantaSearchFieldLabel = document.getElementById("kantaSearchFieldLabel");
+const kantaSearchFieldWrap = document.getElementById("kantaSearchFieldWrap");
+const kantaFromDate = document.getElementById("kantaFromDate");
+const kantaToDate = document.getElementById("kantaToDate");
+const kantaFromDateWrap = document.getElementById("kantaFromDateWrap");
+const kantaToDateWrap = document.getElementById("kantaToDateWrap");
+const kantaSearchButton = document.getElementById("kantaSearchButton");
 const kantaDrawer = document.getElementById("kantaDrawer");
 const kantaDrawerBody = document.getElementById("kantaDrawerBody");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
@@ -38,19 +44,65 @@ function filterValue(record, keyOptions) {
   return String(valueOf(record, ...keyOptions) || "").trim();
 }
 
-function matchesDate(record, selectedDate) {
-  if (!selectedDate) return true;
+function matchesDateRange(record, fromDate, toDate) {
   const date = dateOf(record);
   if (!date) return false;
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-  return localDate === selectedDate;
+  if (fromDate && localDate < fromDate) return false;
+  if (toDate && localDate > toDate) return false;
+  return true;
 }
 
-function setFilterOptions(select, entries, keyOptions, label) {
-  const currentValue = select.value;
-  const values = [...new Set(entries.map((entry) => filterValue(entry, keyOptions)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-  select.innerHTML = `<option value="">All ${label}</option>${values.map((value) => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("")}`;
-  select.value = values.includes(currentValue) ? currentValue : "";
+function getSearchSuggestions(entries, keyOptions) {
+  return [...new Set(entries.map((entry) => filterValue(entry, keyOptions)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function updateKantaSearchUI() {
+  const searchBy = kantaSearchBy.value;
+  const isDateSearch = searchBy === "date";
+  kantaSearchFieldWrap.classList.toggle("hidden", isDateSearch);
+  kantaFromDateWrap.classList.toggle("hidden", !isDateSearch);
+  kantaToDateWrap.classList.toggle("hidden", !isDateSearch);
+  kantaSearchInput.disabled = isDateSearch;
+
+  const fieldMap = {
+    product: ["product", "product_name"],
+    supplier: ["supplier", "supplier_name"],
+    receivingLocation: ["receivingLocation", "receiving_location", "location"]
+  };
+
+  if (fieldMap[searchBy]) {
+    const suggestions = getSearchSuggestions(pendingEntries, fieldMap[searchBy]);
+    const suggestionsList = document.getElementById("kantaSearchSuggestions");
+    suggestionsList.innerHTML = suggestions.map((value) => `<option value="${escapeHTML(value)}"></option>`).join("");
+    kantaSearchFieldLabel.textContent = searchBy === "product" ? "Product" : searchBy === "supplier" ? "Supplier" : "Receiving Location";
+    kantaSearchInput.placeholder = `Enter ${kantaSearchFieldLabel.textContent.toLowerCase()}`;
+  } else {
+    document.getElementById("kantaSearchSuggestions").innerHTML = "";
+    kantaSearchFieldLabel.textContent = "Search Entry";
+    kantaSearchInput.placeholder = "Enter search value";
+  }
+
+  if (isDateSearch) {
+    kantaSearchInput.value = "";
+  }
+}
+
+function matchesSearch(entry, searchBy, searchValue, fromDate, toDate) {
+  if (!searchBy) return true;
+
+  if (searchBy === "date") {
+    return matchesDateRange(entry, fromDate, toDate);
+  }
+
+  const fieldMap = {
+    product: ["product", "product_name"],
+    supplier: ["supplier", "supplier_name"],
+    receivingLocation: ["receivingLocation", "receiving_location", "location"]
+  };
+
+  const targetValue = String(filterValue(entry, fieldMap[searchBy] || []) || "").trim().toLowerCase();
+  return !searchValue || targetValue.includes(searchValue.toLowerCase());
 }
 
 function escapeHTML(value) {
@@ -99,17 +151,62 @@ function documentLink(url) {
     : `<span class="document-unavailable">Document not available</span>`;
 }
 
+function storageRefFromUrl(url) {
+  if (!url || typeof url !== "string") return null;
+  try {
+    const decoded = decodeURIComponent(url);
+    const match = decoded.match(/\/o\/(.+?)(\?.*)?$/);
+    if (!match) return null;
+    return ref(storage, decodeURIComponent(match[1]));
+  } catch (error) {
+    console.warn("Unable to resolve storage reference from URL.", error);
+    return null;
+  }
+}
+
+function deleteEntryWithFiles(entry) {
+  const fileUrls = [
+    entry.kantaSlipUrl,
+    entry.coaFileUrl,
+    entry.coa_file_url,
+    entry.invoiceFileUrl,
+    entry.invoice_file_url,
+    entry.poFileUrl,
+    entry.po_file_url
+  ].filter(Boolean);
+
+  const uniqueUrls = [...new Set(fileUrls)];
+  const deleteFileTasks = uniqueUrls
+    .map((url) => {
+      const fileRef = storageRefFromUrl(url);
+      return fileRef ? deleteObject(fileRef).catch(() => undefined) : Promise.resolve();
+    });
+
+  const firestoreDeletes = [
+    deleteDoc(doc(db, "inward", entry.id)).catch(() => undefined),
+    deleteDoc(doc(db, "kanta", entry.id)).catch(() => undefined)
+  ];
+
+  return Promise.all([
+    ...deleteFileTasks,
+    ...firestoreDeletes,
+    ...getDocs(query(collection(db, "grn"), where("inwardId", "==", entry.id)))
+      .then((snapshot) => snapshot.docs.map((docItem) => deleteDoc(doc(db, "grn", docItem.id)).catch(() => undefined)))
+      .catch(() => [])
+  ]).then(() => undefined);
+}
+
 function renderRows() {
-  const filteredEntries = pendingEntries.filter((entry) => (
-    (!kantaProductFilter.value || filterValue(entry, ["product", "product_name"]) === kantaProductFilter.value)
-    && (!kantaLocationFilter.value || filterValue(entry, ["receivingLocation", "receiving_location", "location"]) === kantaLocationFilter.value)
-    && (!kantaSupplierFilter.value || filterValue(entry, ["supplier", "supplier_name"]) === kantaSupplierFilter.value)
-    && matchesDate(entry, kantaDateFilter.value)
-  ));
+  const searchBy = kantaSearchBy.value;
+  const searchValue = kantaSearchInput.value.trim();
+  const fromDate = kantaFromDate.value;
+  const toDate = kantaToDate.value;
+
+  const filteredEntries = pendingEntries.filter((entry) => matchesSearch(entry, searchBy, searchValue, fromDate, toDate));
   kantaCount.textContent = `${filteredEntries.length} record${filteredEntries.length === 1 ? "" : "s"}`;
 
   if (!filteredEntries.length) {
-    kantaTableBody.innerHTML = `<tr><td class="empty-row" colspan="9">No records found</td></tr>`;
+    kantaTableBody.innerHTML = `<tr><td class="empty-row" colspan="11">No records found</td></tr>`;
     return;
   }
 
@@ -117,11 +214,13 @@ function renderRows() {
     <tr>
       <td>${escapeHTML(dateText(entry))}</td>
       <td>${escapeHTML(valueOf(entry, "invoiceChallanNo", "invoice_challan_no", "invoice_no", "challan_no"))}</td>
+      <td>${escapeHTML(valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number"))}</td>
       <td>${escapeHTML(valueOf(entry, "product", "product_name"))}</td>
       <td>${escapeHTML(valueOf(entry, "supplier", "supplier_name"))}</td>
       <td>${escapeHTML(valueOf(entry, "receivingLocation", "receiving_location", "location"))}</td>
       <td>${documentLink(valueOf(entry, "coaFileUrl", "coa_file_url", "supplier_coa_path"))}</td>
       <td>${documentLink(valueOf(entry, "invoiceFileUrl", "invoice_file_url", "invoice_file_path"))}</td>
+      <td>${documentLink(valueOf(entry, "poFileUrl", "po_file_url", "purchase_order_file_url"))}</td>
       <td><span class="status-tag warning">${escapeHTML(entry.status || "KANTA PENDING")}</span></td>
       <td class="action-col">
         <div class="inline-actions">
@@ -142,14 +241,19 @@ function renderRows() {
   kantaTableBody.querySelectorAll("[data-delete-id]").forEach((button) => {
     button.addEventListener("click", async () => {
       const entry = pendingEntries.find((item) => item.id === button.dataset.deleteId);
-      if (!entry || !window.confirm("Delete this pending Kanta record?")) return;
+      if (!entry) return;
+
+      const confirmed = window.confirm("Are you sure you want to delete this Kanta entry? This will remove the Kanta record and any related uploaded documents for this entry.");
+      if (!confirmed) return;
 
       button.disabled = true;
       button.textContent = "Deleting...";
       try {
-        await deleteDoc(doc(db, "inward", entry.id));
-        kantaMessage.textContent = "Kanta record deleted successfully.";
+        await deleteEntryWithFiles(entry);
+        pendingEntries = pendingEntries.filter((item) => item.id !== entry.id);
+        kantaMessage.textContent = "Kanta entry deleted successfully.";
         kantaMessage.style.color = "var(--success)";
+        renderRows();
       } catch (error) {
         console.error("Unable to delete Kanta record.", error);
         button.disabled = false;
@@ -162,19 +266,25 @@ function renderRows() {
 }
 
 function renderKantaEditor(entry) {
-  const declaredQuantity = Number(valueOf(entry, "declaredQuantity", "declared_quantity", "quantity"));
+  const declaredQuantity = valueOf(entry, "declaredQuantity", "declared_quantity", "quantity");
+  const declaredQuantityText = declaredQuantity !== "" ? String(declaredQuantity) : "";
   const unit = valueOf(entry, "unit", "quantityUnit", "quantity_unit");
+  const receiveType = valueOf(entry, "receiveType", "receive_type", "receivedAs", "received_as");
+  const purchaseOrder = valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number");
+  const industryType = valueOf(entry, "industryType", "industry_type");
 
   kantaDrawerBody.innerHTML = `
     <div class="drawer-section">
       <h4>Inward Details</h4>
       <div class="detail-grid">
+        <div><span>Industry Type</span><strong>${escapeHTML(industryType || "—")}</strong></div>
+        <div><span>Purchase Order (PO)</span><strong>${escapeHTML(purchaseOrder || "—")}</strong></div>
         <div><span>Supplier</span><strong>${escapeHTML(valueOf(entry, "supplier", "supplier_name"))}</strong></div>
         <div><span>Product</span><strong>${escapeHTML(valueOf(entry, "product", "product_name"))}</strong></div>
         <div><span>Invoice / Challan</span><strong>${escapeHTML(valueOf(entry, "invoiceChallanNo", "invoice_challan_no"))}</strong></div>
         <div><span>Receiving Location</span><strong>${escapeHTML(valueOf(entry, "receivingLocation", "receiving_location", "location"))}</strong></div>
-        <div><span>Supplier Lot No.</span><strong>${escapeHTML(valueOf(entry, "supplierLotNo", "supplier_lot_no", "lotNo", "lot_no"))}</strong></div>
-        <div><span>Declared Quantity</span><strong>${escapeHTML(declaredQuantity)} ${escapeHTML(unit)}</strong></div>
+        <div><span>Receive Type</span><strong>${escapeHTML(receiveType || "—")}</strong></div>
+        <div><span>Declared Quantity</span><strong>${escapeHTML(declaredQuantityText || "—")}${declaredQuantityText && unit ? ` ${escapeHTML(unit)}` : ""}</strong></div>
       </div>
     </div>
 
@@ -183,24 +293,20 @@ function renderKantaEditor(entry) {
         <h4>Kanta Entry</h4>
         <div class="field-grid">
           <label>
-            <span>Gross Weight</span>
-            <input type="number" step="0.01" min="0" name="grossWeight" required />
+            <span>Declared Quantity</span>
+            <input type="text" name="declaredQuantity" value="${escapeHTML(declaredQuantityText)}" readonly />
           </label>
           <label>
-            <span>Tare Weight</span>
-            <input type="number" step="0.01" min="0" name="tareWeight" required />
-          </label>
-          <label>
-            <span>Net Weight</span>
-            <input type="number" step="0.01" name="netWeight" readonly />
+            <span>Received Qty</span>
+            <input type="number" step="0.01" min="0" name="receivedQty" required />
           </label>
           <label>
             <span>Difference</span>
-            <input type="number" step="0.01" name="difference" readonly />
+            <input type="number" step="0.01" name="difference" required />
           </label>
           <label>
-            <span>Difference %</span>
-            <input type="number" step="0.01" name="differencePercentage" readonly />
+            <span>Difference in %</span>
+            <input type="number" step="0.01" name="differencePercentage" required />
           </label>
           <label>
             <span>Kanta Slip</span>
@@ -216,43 +322,30 @@ function renderKantaEditor(entry) {
   `;
 
   const kantaForm = document.getElementById("kantaForm");
-  const grossWeight = kantaForm.elements.grossWeight;
-  const tareWeight = kantaForm.elements.tareWeight;
-  const netWeight = kantaForm.elements.netWeight;
+  const receivedQty = kantaForm.elements.receivedQty;
   const difference = kantaForm.elements.difference;
   const differencePercentage = kantaForm.elements.differencePercentage;
   const calculationMessage = document.getElementById("kantaCalculationMessage");
-
-  function calculate() {
-    const gross = Number(grossWeight.value);
-    const tare = Number(tareWeight.value);
-    const hasWeights = grossWeight.value !== "" && tareWeight.value !== "" && Number.isFinite(gross) && Number.isFinite(tare);
-    const valid = hasWeights && gross > 0 && tare >= 0 && gross >= tare && declaredQuantity > 0;
-    const net = hasWeights ? Math.max(0, gross - tare) : 0;
-    const delta = hasWeights && declaredQuantity > 0 ? net - declaredQuantity : 0;
-    const percentage = hasWeights && declaredQuantity > 0 ? (delta / declaredQuantity) * 100 : 0;
-
-    netWeight.value = hasWeights ? net.toFixed(2) : "";
-    difference.value = hasWeights ? delta.toFixed(2) : "";
-    differencePercentage.value = hasWeights ? percentage.toFixed(2) : "";
-    calculationMessage.textContent = hasWeights && gross < tare ? "Gross Weight must be greater than or equal to Tare Weight." : "";
-    calculationMessage.style.color = "var(--danger)";
-    return { gross, tare, net, difference: delta, differencePercentage: percentage, valid };
-  }
-
-  grossWeight.addEventListener("input", calculate);
-  tareWeight.addEventListener("input", calculate);
 
   kantaForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submitButton = kantaForm.querySelector("button[type=submit]");
     if (submitButton.disabled) return;
 
-    const weights = calculate();
-    if (!weights.valid) {
-      calculationMessage.textContent = declaredQuantity <= 0
-        ? "Declared Quantity must be greater than 0."
-        : "Enter valid weights. Gross Weight must be greater than 0 and greater than or equal to Tare Weight.";
+    const rawReceived = Number(receivedQty.value);
+    const validReceived = receivedQty.value !== "" && Number.isFinite(rawReceived) && rawReceived >= 0;
+    const parsedDifference = Number(difference.value);
+    const parsedDifferencePercentage = Number(differencePercentage.value);
+    const validDeclared = declaredQuantityText !== "" && String(declaredQuantityText).trim() !== "";
+
+    if (!validReceived || !validDeclared) {
+      calculationMessage.textContent = !validDeclared ? "Declared Quantity must be available before saving Kanta." : "Please enter a valid received quantity.";
+      calculationMessage.style.color = "var(--danger)";
+      return;
+    }
+
+    if (!Number.isFinite(parsedDifference) || !Number.isFinite(parsedDifferencePercentage)) {
+      calculationMessage.textContent = "Please enter both Difference and Difference in % manually.";
       calculationMessage.style.color = "var(--danger)";
       return;
     }
@@ -280,12 +373,11 @@ function renderKantaEditor(entry) {
       const batch = writeBatch(db);
       batch.set(kantaRef, {
         inwardId: entry.id,
-        grossWeight: weights.gross,
-        tareWeight: weights.tare,
-        netWeight: weights.net,
-        declaredQuantity,
-        difference: weights.difference,
-        differencePercentage: weights.differencePercentage,
+        receivedQty: rawReceived,
+        received_quantity: rawReceived,
+        difference: parsedDifference,
+        differencePercentage: parsedDifferencePercentage,
+        difference_percentage: parsedDifferencePercentage,
         kantaSlipUrl,
         status: "KANTA COMPLETED",
         createdAt: serverTimestamp()
@@ -312,17 +404,19 @@ function renderKantaEditor(entry) {
 }
 
 const pendingQuery = query(collection(db, "inward"), where("status", "==", "KANTA PENDING"));
-kantaProductFilter.addEventListener("change", renderRows);
-kantaLocationFilter.addEventListener("change", renderRows);
-kantaSupplierFilter.addEventListener("change", renderRows);
-kantaDateFilter.addEventListener("change", renderRows);
+kantaSearchBy.addEventListener("change", () => {
+  updateKantaSearchUI();
+  renderRows();
+});
+kantaSearchInput.addEventListener("input", renderRows);
+kantaFromDate.addEventListener("change", renderRows);
+kantaToDate.addEventListener("change", renderRows);
+kantaSearchButton.addEventListener("click", renderRows);
 onSnapshot(pendingQuery, (snapshot) => {
   pendingEntries = snapshot.docs
     .map((item) => ({ id: item.id, ...item.data() }))
     .sort((a, b) => (dateOf(b)?.getTime() || 0) - (dateOf(a)?.getTime() || 0));
-  setFilterOptions(kantaProductFilter, pendingEntries, ["product", "product_name"], "products");
-  setFilterOptions(kantaLocationFilter, pendingEntries, ["receivingLocation", "receiving_location", "location"], "locations");
-  setFilterOptions(kantaSupplierFilter, pendingEntries, ["supplier", "supplier_name"], "suppliers");
+  updateKantaSearchUI();
   renderRows();
 }, (error) => {
   console.error("Unable to load Kanta pending records.", error);

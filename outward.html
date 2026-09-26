@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Outward - Cognizant Chemical Private Limited</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="css/packaging-workflow.css" />
+    <script src="js/outward-packaging.js" defer></script>
+    <style>
+      :root {
+        --sidebar-bg: #0f172a;
+        --sidebar-alt: #111827;
+        --primary: #2563eb;
+        --primary-soft: #dbeafe;
+        --card: #ffffff;
+        --text: #0f172a;
+        --muted: #64748b;
+        --muted-strong: #475569;
+        --border: #e2e8f0;
+        --shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Inter", sans-serif;
+        background: #edf4fb;
+        color: var(--text);
+      }
+      a { text-decoration: none; }
+      .topbar {
+        position: fixed; top: 0; left: 0; right: 0; height: 82px; background: rgba(255,255,255,0.94); backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(148,163,184,0.2); box-shadow: 0 8px 18px rgba(15,23,42,0.04); z-index: 50;
+        display: flex; align-items: center; justify-content: space-between; padding: 0 28px 0 22px;
+      }
+      .brand-wrap { display: flex; align-items: center; }
+      .brand-logo { width: 46px; height: 46px; border-radius: 14px; background: linear-gradient(135deg, var(--primary), #60a5fa); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+      .brand-text { margin-left: 14px; display: flex; flex-direction: column; }
+      .brand-text .label { font-size: 0.67rem; font-weight: 700; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+      .brand-text .title { font-size: clamp(1rem, 1.2vw, 1.38rem); font-weight: 800; color: var(--text); }
+      .mobile-menu-toggle { display: none; width: 42px; height: 42px; border: 1px solid var(--border); border-radius: 10px; background: #fff; color: var(--text); margin-right: 10px; cursor: pointer; }
+      .sidebar {
+        position: fixed; left: 0; top: 82px; bottom: 0; width: 260px; background: linear-gradient(180deg, var(--sidebar-bg), var(--sidebar-alt));
+        color: #e2e8f0; padding: 22px 16px 28px; box-shadow: inset -1px 0 0 rgba(148,163,184,0.15); z-index: 40; transition: transform .25s ease;
+      }
+      .nav-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .nav-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 14px; border-radius: 14px; color: #dfeafc; font-weight: 600; }
+      .nav-item i { width: 18px; text-align: center; }
+      .nav-item.active { background: linear-gradient(135deg, rgba(37,99,235,0.22), rgba(59,130,246,0.1)); border: 1px solid rgba(96,165,250,0.25); color: #fff; }
+      .main-panel { margin-left: 260px; padding-top: 82px; min-height: 100vh; }
+      .main-content { max-width: 1100px; margin: 0 auto; padding: 28px 24px 60px; }
+      .page-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+      .eyebrow {
+        display: inline-flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; background: var(--primary-soft); color: var(--primary); border: 1px solid rgba(37,99,235,0.12);
+      }
+      .page-header h1 { margin: 16px 0 0; font-size: clamp(2rem, 2vw, 2.6rem); letter-spacing: -0.05em; }
+      .header-badge { padding: 10px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--border); color: var(--muted-strong); font-size: 0.8rem; font-weight: 600; box-shadow: var(--shadow); }
+      .card { background: rgba(255,255,255,0.96); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); overflow: hidden; }
+      .card-header { padding: 22px 24px; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, #ffffff, #f4f8ff); }
+      .card-header h2 { margin: 0; }
+      .card-body { padding: 24px; color: var(--muted-strong); }
+      @media (max-width: 820px) {
+        .mobile-menu-toggle { display: inline-grid; place-items: center; }
+        .sidebar { transform: translateX(-102%); box-shadow: 12px 0 30px rgba(15,23,42,.2); }
+        .sidebar.open { transform: translateX(0); }
+        .main-panel { margin-left: 0; }
+        .main-content { padding: 18px 16px 40px; }
+        .page-header { flex-direction: column; align-items: flex-start; }
+      }
+      @media (max-width: 560px) { .brand-text .title { white-space: normal; max-width: 200px; font-size: .9rem; } .brand-logo { width: 40px; height: 40px; } }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo">CC</div>
+        <div class="brand-text">
+          <span class="label">Company</span>
+          <span class="title">Cognizant Chemical Private Limited</span>
+        </div>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item active" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div>
+            <span class="eyebrow"><i class="fa-solid fa-arrow-up-from-bracket"></i> Outward</span>
+            <h1>Outward</h1>
+            <p class="page-subtitle">Dispatch product with a customer packaging preview</p>
+          </div>
+          <div class="header-badge">Available in ERP navigation</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>Outward Dispatch</h2></div>
+          <div class="card-body outward-content">
+            <p class="outward-demo-notice"><i class="fa-solid fa-circle-info"></i> Demo preview only. Product and packaging quantities shown here are not saved or deducted.</p>
+            <form id="outwardForm" novalidate>
+              <div class="outward-workspace">
+                <section class="outward-panel" aria-labelledby="productInventoryHeading">
+                  <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><span class="product-inventory-label">Product Inventory</span><h3 id="productInventoryHeading">Product stock</h3><p>Product stock is shown separately from packaging stock.</p></div></div>
+                  <div class="outward-panel-body">
+                    <label class="field" for="outwardProduct"><span>Product</span><select id="outwardProduct"><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select></label>
+                    <label class="field" for="outwardProductQuantity" style="margin-top: 13px"><span>Product Quantity</span><input id="outwardProductQuantity" type="number" min="1" value="2" /><small>Quantity to dispatch, in product units</small></label>
+                    <div class="inventory-demo-card" style="margin-top: 15px"><span class="inventory-demo-title"><i class="fa-solid fa-cubes-stacked"></i> Demo product stock</span><strong class="inventory-demo-product" id="demoProductName">Acetone 2.5L</strong><span class="inventory-demo-quantity">1,250 Litres available</span></div>
+                  </div>
+                </section>
+
+                <section class="outward-panel" aria-labelledby="packagingDetailsHeading">
+                  <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-box-open"></i></span><div><span class="packaging-stock-label">Packaging Stock</span><h3 id="packagingDetailsHeading">Packaging Details</h3><p>Preview material needs from the selected recipe</p></div></div>
+                  <div class="outward-panel-body">
+                    <div class="outward-field-grid">
+                      <label class="field" for="packagingCustomer"><span>Customer</span><select id="packagingCustomer"><option>ABC Chemicals</option><option>XYZ Industries</option><option>Customer Demo</option></select></label>
+                      <label class="field" for="packagingProduct"><span>Product</span><select id="packagingProduct"><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select></label>
+                      <label class="field" for="packagingConfiguration"><span>Packaging Configuration</span><select id="packagingConfiguration"><option value="">Select configuration</option></select></label>
+                      <label class="field" id="numberOfBoxesField" for="numberOfBoxes"><span>Number of Boxes</span><input id="numberOfBoxes" type="number" min="1" step="1" value="2" /><span class="field-error" id="numberOfBoxesError"></span></label>
+                    </div>
+                    <div class="packaging-results" id="packagingResults" hidden>
+                      <div class="packaging-result-title"><h4>Required Packaging Quantities</h4><span class="demo-chip"><i class="fa-solid fa-wand-magic-sparkles"></i> Demo calculation</span></div>
+                      <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Packaging Material</th><th>Per Box</th><th>Required</th><th>Unit</th></tr></thead><tbody id="requiredMaterials"></tbody></table></div>
+                      <div class="packaging-results" style="margin-top: 13px; padding-top: 13px">
+                        <div class="packaging-result-title"><h4>Current Packaging Stock</h4><span class="demo-chip"><i class="fa-solid fa-eye"></i> Preview only</span></div>
+                        <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Material</th><th>Available</th><th>Required</th><th>Balance</th><th>Status</th></tr></thead><tbody id="packagingStockPreview"></tbody></table></div>
+                        <div class="stock-warning" id="stockWarning" role="status" aria-live="polite"></div>
+                      </div>
+                    </div>
+                    <p class="packaging-no-config" id="packagingNoConfig" hidden>Select a matching customer, product, and packaging configuration to preview requirements.</p>
+                  </div>
+                </section>
+              </div>
+
+              <section class="consumption-summary" id="consumptionSummary" aria-labelledby="consumptionSummaryHeading" hidden>
+                <div class="consumption-summary-header"><h3 id="consumptionSummaryHeading">Packaging Consumption Summary</h3><span class="demo-chip">Preview only</span></div>
+                <div class="consumption-summary-body">
+                  <div class="summary-context">
+                    <div class="summary-context-item"><span>Customer</span><strong id="summaryCustomer"></strong></div>
+                    <div class="summary-context-item"><span>Product</span><strong id="summaryProduct"></strong></div>
+                    <div class="summary-context-item"><span>Configuration</span><strong id="summaryConfiguration"></strong></div>
+                    <div class="summary-context-item"><span>Boxes</span><strong id="summaryBoxes"></strong></div>
+                  </div>
+                  <p class="summary-material-count" id="summaryMaterialCount"></p>
+                  <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Material</th><th>Per Box</th><th>Total Required</th><th>Unit</th></tr></thead><tbody id="summaryMaterials"></tbody></table></div>
+                </div>
+              </section>
+
+              <section class="outward-finalize" aria-labelledby="outwardFinalizeHeading">
+                <div><h3 id="outwardFinalizeHeading">Outward Finalization</h3><p id="outwardFinalizeHint">Finalization is a UI preview and does not update inventory.</p></div>
+                <button class="button button-primary" id="finalizeOutward" type="submit" disabled><i class="fa-solid fa-truck-fast"></i> Finalize Outward</button>
+              </section>
+              <div class="outward-toast" id="outwardToast" role="status" aria-live="polite"></div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

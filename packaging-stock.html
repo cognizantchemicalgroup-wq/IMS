@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Packaging Stock - CCPL IMS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="css/packaging.css" />
+    <script src="js/packaging-stock.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo">CC</div>
+        <div class="brand-text"><span class="label">Company</span><span class="title">Cognizant Chemical Private Limited</span></div>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item active" href="packaging-stock.html" aria-current="page"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div>
+            <span class="eyebrow"><i class="fa-solid fa-box-open"></i> Packaging</span>
+            <h1>Packaging Stock</h1>
+            <p class="page-subtitle">Customer-wise packaging material stock management</p>
+          </div>
+          <div class="header-actions">
+            <span class="header-badge"><i class="fa-solid fa-circle-check"></i> Packaging Stock Overview</span>
+            <a class="button button-primary" href="receive-packaging.html"><i class="fa-solid fa-plus"></i> Receive Material</a>
+          </div>
+        </div>
+
+        <section class="stats-grid" aria-label="Packaging stock summary">
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Total Packaging Materials</span><span class="mini-icon"><i class="fa-solid fa-boxes-stacked"></i></span></div><p class="stat-value">4</p><span class="stat-note">Across demo customers</span></article>
+          <article class="stat-card stat-green"><div class="stat-top"><span class="stat-label">Total Received Quantity</span><span class="mini-icon"><i class="fa-solid fa-arrow-down-to-line"></i></span></div><p class="stat-value">40</p><span class="stat-note">Pieces received</span></article>
+          <article class="stat-card stat-amber"><div class="stat-top"><span class="stat-label">Total Consumed Quantity</span><span class="mini-icon"><i class="fa-solid fa-arrow-up-from-bracket"></i></span></div><p class="stat-value">18</p><span class="stat-note">Pieces consumed</span></article>
+          <article class="stat-card stat-teal"><div class="stat-top"><span class="stat-label">Available Packaging Stock</span><span class="mini-icon"><i class="fa-solid fa-cubes-stacked"></i></span></div><p class="stat-value">22</p><span class="stat-note">Pieces available</span></article>
+        </section>
+
+        <section class="customer-focus" aria-label="Customer stock selection">
+          <div class="customer-focus-copy"><span class="focus-icon"><i class="fa-solid fa-building-user"></i></span><div><span class="focus-label">Customer stock view</span><strong id="customerHeading">All customers</strong></div></div>
+          <label class="customer-select-wrap" for="customerFilter"><span>Customer</span><select id="customerFilter"><option value="">All Customers</option><option value="none">No customer selected</option><option>ABC Chemicals</option><option>XYZ Industries</option><option>Customer Demo</option></select></label>
+        </section>
+
+        <section class="register-card" aria-labelledby="stockHeading">
+          <div class="register-header">
+            <div><h2 id="stockHeading">Packaging Stock</h2><p id="tableDescription">Customer-level demo stock overview</p></div>
+            <label class="search-wrap" for="materialSearch"><i class="fa-solid fa-magnifying-glass"></i><input id="materialSearch" type="search" placeholder="Search packaging material" autocomplete="off" /></label>
+          </div>
+          <div class="filters">
+            <label class="filter-field"><span>Stock status</span><select id="statusFilter"><option value="">All statuses</option><option>In Stock</option><option>Low Stock</option><option>Out of Stock</option></select></label>
+            <label class="filter-field"><span>Unit</span><select id="unitFilter"><option value="">All units</option><option>Pieces</option><option>KG</option><option>Liter</option></select></label>
+            <button class="button" id="resetFilters" type="button"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+          </div>
+          <div class="loading-state" id="loadingState"><span class="loading-spinner"></span><span>Loading packaging stock…</span></div>
+          <div class="table-scroll" id="tableWrap" hidden>
+            <table class="stock-table">
+              <thead><tr><th>Customer</th><th>Packaging Material</th><th>Received</th><th>Consumed</th><th>Available</th><th>Unit</th><th>Status</th><th>Action</th></tr></thead>
+              <tbody id="stockRows"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" id="emptyState" hidden><span class="empty-icon"><i class="fa-solid fa-box-open"></i></span><h3 id="emptyTitle">No packaging stock available.</h3><p id="emptyMessage">There are no demo materials for this selection.</p></div>
+          <div class="table-footer"><span id="resultCount">Loading records</span><span>Demo data for UI preview</span></div>
+        </section>
+        <p class="demo-note"><i class="fa-solid fa-circle-info"></i> Figures shown are illustrative only and are not connected to live stock records.</p>
+      </div>
+    </main>
+    <div class="overlay" id="drawerOverlay"></div>
+    <aside class="stock-drawer" id="stockDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" tabindex="-1">
+      <div class="drawer-header"><div><span class="drawer-kicker">Packaging stock details</span><h2 id="drawerTitle">Material Details</h2></div><button class="icon-button" id="closeDrawerIcon" type="button" aria-label="Close details"><i class="fa-solid fa-xmark"></i></button></div>
+      <div class="drawer-content" id="drawerContent"></div>
+      <div class="drawer-footer"><button class="button" id="closeDrawer" type="button">Close</button></div>
+    </aside>
+  </body>
+</html>
