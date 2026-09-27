@@ -483,9 +483,21 @@
       <aside class="sidebar" id="sidebar">
         <ul class="nav-list">
           <li>
-            <a class="nav-item" href="dashboard.html">
+            <a class="nav-item" href="index.html">
               <i class="fa-solid fa-house"></i>
               <span>Home</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="po.html">
+              <i class="fa-solid fa-file-invoice-dollar"></i>
+              <span>PO</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="dashboard.html">
+              <i class="fa-solid fa-gauge-high"></i>
+              <span>Dashboard</span>
             </a>
           </li>
           <li>
@@ -504,6 +516,30 @@
             <a class="nav-item" href="grn-finalize.html">
               <i class="fa-solid fa-file-circle-check"></i>
               <span>GRN Finalize</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="inventory.html">
+              <i class="fa-solid fa-boxes-stacked"></i>
+              <span>Inventory</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="outward.html">
+              <i class="fa-solid fa-arrow-up-from-bracket"></i>
+              <span>Outward</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="packaging-stock.html">
+              <i class="fa-solid fa-box-open"></i>
+              <span>Packaging Stock</span>
+            </a>
+          </li>
+          <li>
+            <a class="nav-item" href="packaging-configurations.html">
+              <i class="fa-solid fa-list-check"></i>
+              <span>Packaging Configurations</span>
             </a>
           </li>
         </ul>
@@ -558,12 +594,28 @@
                   </div>
 
                   <div class="form-group">
+                    <label for="industryType">Industry Type</label>
+                    <select id="industryType" name="industryType">
+                      <option value="">Select industry type</option>
+                      <option value="Repacking">Repacking</option>
+                      <option value="Distillation">Distillation</option>
+                      <option value="Trading">Trading</option>
+                      <option value="Distillation Cum Packing">Distillation Cum Packing</option>
+                    </select>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="purchaseOrder">Purchase Order (PO)</label>
+                    <input id="purchaseOrder" name="purchaseOrder" type="text" placeholder="Enter purchase order number" />
+                  </div>
+
+                  <div class="form-group">
                     <label for="receivingLocation">Receiving Location <span class="required">*</span></label>
                     <select id="receivingLocation" name="receivingLocation" required>
                       <option value="">Select location</option>
-                      <option value="warehouse-1">Warehouse A</option>
-                      <option value="warehouse-2">Warehouse B</option>
-                      <option value="warehouse-3">Plant Store</option>
+                      <option value="Warehouse A">Warehouse A</option>
+                      <option value="Warehouse B">Warehouse B</option>
+                      <option value="Plant Store">Plant Store</option>
                     </select>
                   </div>
 
@@ -588,93 +640,37 @@
                   <h3>Received Quantity Details</h3>
 
                   <div id="drumsFields" class="dynamic-block">
-                    <div class="form-grid">
-                      <div class="form-group">
-                        <label for="totalDrums">Total Drums</label>
-                        <input id="totalDrums" name="totalDrums" type="number" min="0" step="1" placeholder="Enter total drums" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="qtyPerDrum">Qty / Drum (kg)</label>
-                        <input id="qtyPerDrum" name="qtyPerDrum" type="number" min="0" step="0.01" placeholder="Enter quantity per drum" />
-                      </div>
-
-                      <div class="form-group full">
-                        <label for="totalDeclaredQty">Total Declared Quantity</label>
-                        <input id="totalDeclaredQty" name="totalDeclaredQty" type="text" class="readonly" readonly placeholder="Calculated result appears here" />
-                      </div>
-                    </div>
-
-                    <div class="button-row" style="margin-top: 16px;">
-                      <button type="button" class="btn btn-secondary" id="calculateDrumsBtn">Calculate</button>
+                    <div class="form-group full">
+                      <label for="drumsDeclaredQty">Total Declared Quantity</label>
+                      <input id="drumsDeclaredQty" name="drumsDeclaredQty" type="text" placeholder="Enter total declared quantity such as 1okg or 100 Units" />
                     </div>
                   </div>
 
                   <div id="ibcFields" class="dynamic-block">
-                    <div class="form-grid">
-                      <div class="form-group">
-                        <label for="noOfIbcs">No. of IBCs</label>
-                        <input id="noOfIbcs" name="noOfIbcs" type="number" min="0" step="1" placeholder="Enter number of IBCs" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="qtyPerIbc">Qty / IBC (L)</label>
-                        <input id="qtyPerIbc" name="qtyPerIbc" type="number" min="0" step="0.01" placeholder="Enter quantity per IBC" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="densityIbc">Density (kg/L)</label>
-                        <input id="densityIbc" name="densityIbc" type="number" min="0" step="0.01" placeholder="Enter density" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="calculatedQtyIbc">Calculated Quantity</label>
-                        <input id="calculatedQtyIbc" name="calculatedQtyIbc" type="text" class="readonly" readonly placeholder="Ready for later formula" />
-                      </div>
-                    </div>
-
-                    <div class="button-row" style="margin-top: 16px;">
-                      <button type="button" class="btn btn-secondary" id="calculateIbcBtn">Calculate</button>
+                    <div class="form-group full">
+                      <label for="ibcDeclaredQty">Total Declared Quantity</label>
+                      <input id="ibcDeclaredQty" name="ibcDeclaredQty" type="text" placeholder="Enter total declared quantity such as 1okg or 100 Units" />
                     </div>
                   </div>
 
                   <div id="tankerFields" class="dynamic-block">
-                    <div class="form-grid">
-                      <div class="form-group">
-                        <label for="invoiceQty">Invoice Quantity</label>
-                        <input id="invoiceQty" name="invoiceQty" type="number" min="0" step="0.01" placeholder="Enter invoice quantity" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="invoiceUnit">Invoice Unit</label>
-                        <select id="invoiceUnit" name="invoiceUnit">
-                          <option value="">Select unit</option>
-                          <option value="Liter">Liter</option>
-                          <option value="KL">KL</option>
-                          <option value="Kg">Kg</option>
-                        </select>
-                      </div>
-
-                      <div class="form-group">
-                        <label for="densityTanker">Density (kg/L)</label>
-                        <input id="densityTanker" name="densityTanker" type="number" min="0" step="0.01" placeholder="Enter density" />
-                      </div>
-
-                      <div class="form-group">
-                        <label for="calculatedQtyTanker">Calculated Quantity</label>
-                        <input id="calculatedQtyTanker" name="calculatedQtyTanker" type="text" class="readonly" readonly placeholder="Ready for later formula" />
-                      </div>
-                    </div>
-
-                    <div class="button-row" style="margin-top: 16px;">
-                      <button type="button" class="btn btn-secondary" id="calculateTankerBtn">Calculate</button>
+                    <div class="form-group full">
+                      <label for="tankerDeclaredQty">Total Declared Quantity</label>
+                      <input id="tankerDeclaredQty" name="tankerDeclaredQty" type="text" placeholder="Enter total declared quantity such as 1okg or 100 Units" />
                     </div>
                   </div>
 
                   <div id="otherFields" class="dynamic-block">
-                    <div class="form-group full">
-                      <label for="otherQuantity">Other Quantity / Details</label>
-                      <input id="otherQuantity" name="otherQuantity" type="text" placeholder="Enter other quantity or details" />
+                    <div class="form-grid">
+                      <div class="form-group">
+                        <label for="otherReceiveType">Receive Type</label>
+                        <input id="otherReceiveType" name="otherReceiveType" type="text" placeholder="Enter receive type" />
+                      </div>
+
+                      <div class="form-group">
+                        <label for="otherDeclaredQty">Total Declared Quantity</label>
+                        <input id="otherDeclaredQty" name="otherDeclaredQty" type="text" placeholder="Enter total declared quantity such as 1okg or 100 Units" />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -695,6 +691,14 @@
                       <div class="file-upload-wrap">
                         <input id="supplierCoa" name="supplierCoa" type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx" />
                         <div id="coaFileName" class="filename">No file selected</div>
+                      </div>
+                    </div>
+
+                    <div class="form-group full">
+                      <label for="poUpload">Upload PO</label>
+                      <div class="file-upload-wrap">
+                        <input id="poUpload" name="poUpload" type="file" accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx" />
+                        <div id="poFileName" class="filename">No file selected</div>
                       </div>
                     </div>
                   </div>
@@ -721,9 +725,6 @@
       const ibcFields = document.getElementById('ibcFields');
       const tankerFields = document.getElementById('tankerFields');
       const otherFields = document.getElementById('otherFields');
-      const totalDrums = document.getElementById('totalDrums');
-      const qtyPerDrum = document.getElementById('qtyPerDrum');
-      const totalDeclaredQty = document.getElementById('totalDeclaredQty');
       const form = document.getElementById('inwardForm');
       const formMessage = document.getElementById('formMessage');
       const navLinks = document.querySelectorAll('.nav-item');
@@ -780,6 +781,11 @@
       document.getElementById('supplierCoa').addEventListener('change', function () {
         const fileName = this.files && this.files.length ? this.files[0].name : 'No file selected';
         document.getElementById('coaFileName').textContent = fileName;
+      });
+
+      document.getElementById('poUpload').addEventListener('change', function () {
+        const fileName = this.files && this.files.length ? this.files[0].name : 'No file selected';
+        document.getElementById('poFileName').textContent = fileName;
       });
 
       if (mobileToggle) {

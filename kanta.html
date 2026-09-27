@@ -245,10 +245,12 @@
       }
 
       .filter-toolbar {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(150px, 1fr));
-        gap: 12px;
-        padding: 16px 22px;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: end;
+        gap: 10px;
+        padding: 12px 18px 14px;
         border-bottom: 1px solid var(--border);
         background: #f8fbff;
       }
@@ -256,9 +258,18 @@
       .filter-toolbar label {
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 5px;
         color: var(--muted-strong);
         font-size: 0.75rem;
+        font-weight: 700;
+        min-width: 0;
+        flex: 0 1 220px;
+        max-width: 220px;
+      }
+
+      .filter-toolbar span {
+        color: var(--muted-strong);
+        font-size: 0.72rem;
         font-weight: 700;
       }
 
@@ -271,6 +282,41 @@
         padding: 9px 10px;
         background: #fff;
         color: var(--text);
+      }
+
+      .filter-toolbar .date-range-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .filter-toolbar .hidden {
+        display: none;
+      }
+
+      .filter-toolbar .compact-btn {
+        align-self: end;
+        height: 36px;
+        padding: 0 14px;
+        min-width: 100px;
+        font-size: 0.78rem;
+        margin-left: 4px;
+      }
+
+      .primary-btn {
+        border: none;
+        background: linear-gradient(135deg, var(--primary), #0f766e);
+        color: #fff;
+        border-radius: 10px;
+        padding: 8px 14px;
+        cursor: pointer;
+        font-weight: 700;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .primary-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(15, 118, 110, 0.15);
       }
 
       .table-wrapper {
@@ -576,10 +622,16 @@
 
       <aside class="sidebar" id="sidebar">
         <ul class="nav-list">
-          <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+          <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+          <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+          <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
           <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
           <li><a class="nav-item active" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
           <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+          <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+          <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+          <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+          <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
         </ul>
       </aside>
 
@@ -603,10 +655,34 @@
             <p class="kanta-message" id="kantaMessage" role="status" aria-live="polite"></p>
 
             <div class="filter-toolbar" aria-label="Kanta filters">
-              <label>Product<select id="kantaProductFilter"><option value="">All products</option></select></label>
-              <label>Location<select id="kantaLocationFilter"><option value="">All locations</option></select></label>
-              <label>Supplier<select id="kantaSupplierFilter"><option value="">All suppliers</option></select></label>
-              <label>Date<input id="kantaDateFilter" type="date" /></label>
+              <label>
+                <span>Search By</span>
+                <select id="kantaSearchBy">
+                  <option value="">Select</option>
+                  <option value="product">Product</option>
+                  <option value="supplier">Supplier</option>
+                  <option value="date">Date</option>
+                  <option value="receivingLocation">Receiving Location</option>
+                </select>
+              </label>
+
+              <label id="kantaSearchFieldWrap">
+                <span id="kantaSearchFieldLabel">Search Entry</span>
+                <input id="kantaSearchInput" type="text" placeholder="Enter search value" list="kantaSearchSuggestions" />
+                <datalist id="kantaSearchSuggestions"></datalist>
+              </label>
+
+              <label id="kantaFromDateWrap" class="date-range-field hidden">
+                <span>From Date</span>
+                <input id="kantaFromDate" type="date" />
+              </label>
+
+              <label id="kantaToDateWrap" class="date-range-field hidden">
+                <span>To Date</span>
+                <input id="kantaToDate" type="date" />
+              </label>
+
+              <button id="kantaSearchButton" class="primary-btn compact-btn" type="button">Search</button>
             </div>
 
             <div class="table-wrapper">
@@ -615,11 +691,13 @@
                   <tr>
                     <th>Date &amp; Time</th>
                     <th>Invoice No.</th>
+                    <th>PO No.</th>
                     <th>Product</th>
                     <th>Supplier</th>
-                    <th>Receiving Location</th>
-                    <th>Uploaded COA</th>
-                    <th>Uploaded Invoice</th>
+                    <th>Receiving Loc.</th>
+                    <th>COA</th>
+                    <th>Invoice</th>
+                    <th>Purchase Order</th>
                     <th>Status</th>
                     <th class="action-col">Action</th>
                   </tr>
