@@ -26,12 +26,14 @@ const emptyState = document.getElementById("emptyState");
 const pageStatus = document.getElementById("pageStatus");
 const loadMoreButton = document.getElementById("loadMore");
 const detailsDrawer = document.getElementById("detailsDrawer");
+const deleteConfirmation = document.getElementById("deleteConfirmation");
 initDocumentPreview();
 const drawerBackdrop = document.getElementById("drawerBackdrop");
 let lastDocument = null;
 let hasMore = true;
 let loading = false;
 let filterExpansionTimer = null;
+let selectedDeleteId = "";
 
 function escapeHTML(value) {
   return String(value ?? "—")
@@ -96,10 +98,14 @@ function rowReceived(record) {
   return valueOf(record.kanta || {}, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight");
 }
 
+function rowDeclared(record) {
+  return valueOf(record.inward || {}, "declaredQuantity", "declared_quantity", "quantity");
+}
+
 function quantityText(quantity, unit) {
   if (quantity === "") return "—";
   const value = String(quantity);
-  return unit && !value.toLowerCase().includes(String(unit).toLowerCase()) ? `${value} ${unit}` : value;
+  return unit && Number.isFinite(Number(value)) ? `${value} ${unit}` : value;
 }
 
 function matchesFilters(record) {
@@ -143,7 +149,7 @@ function renderTable() {
     const inward = record.inward || {};
     const quantity = rowReceived(record);
     const unit = rowUnit(record);
-    const note = valueOf(record, "note", "notes") || "N/A";
+    const note = valueOf(record, "remark", "note", "notes") || "N/A";
     return `<tr>
       <td>${escapeHTML(grnNumber(record))}</td>
       <td>${escapeHTML(dateText(finalizedDate(record), true))}</td>
@@ -152,11 +158,12 @@ function renderTable() {
       <td>${escapeHTML(rowProduct(record) || "—")}</td>
       <td>${escapeHTML(rowSupplier(record) || "—")}</td>
       <td>${escapeHTML(rowLocation(record) || "—")}</td>
+      <td>${escapeHTML(rowDeclared(record) || "—")}</td>
       <td>${escapeHTML(quantity === "" ? "—" : quantity)}</td>
       <td>${escapeHTML(unit || "—")}</td>
       <td><span class="status-tag">${escapeHTML(valueOf(record, "status") || "—")}</span></td>
       <td><span class="note-cell" title="${escapeHTML(note)}">${escapeHTML(note)}</span></td>
-      <td><button class="row-action" type="button" data-view-id="${escapeHTML(record.id)}">View</button></td>
+      <td><div class="action-buttons"><button class="row-action" type="button" data-view-id="${escapeHTML(record.id)}">View</button><button class="row-action danger" type="button" data-delete-id="${escapeHTML(record.id)}">Delete</button><button class="row-action" type="button" data-download-id="${escapeHTML(record.id)}">Download</button></div></td>
     </tr>`;
   }).join("");
   emptyState.hidden = filtered.length > 0;
@@ -211,7 +218,7 @@ async function loadNextPage() {
   } catch (error) {
     console.error("Unable to load accepted GRN history.", error);
     pageStatus.textContent = "Accepted GRN history could not be loaded. Please refresh and try again.";
-    body.innerHTML = `<tr><td colspan="12" class="empty-state">Unable to load accepted GRNs.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13" class="empty-state">Unable to load accepted GRNs.</td></tr>`;
     loadMoreButton.hidden = true;
     hasMore = false;
   } finally {
@@ -235,8 +242,42 @@ async function expandHistoryForActiveFilters() {
 
 function documentLink(url, title = "Document") {
   return url
-    ? `<button class="row-action" type="button" data-preview-url="${escapeHTML(url)}" data-preview-title="${escapeHTML(title)}">Open</button>`
-    : "Not available";
+    ? `<button class="row-action" type="button" data-preview-url="${escapeHTML(url)}" data-preview-title="${escapeHTML(title)}">View</button>`
+    : "Not Available";
+}
+
+function downloadGrn(record) {
+  const inward = record.inward || {};
+  const kanta = record.kanta || {};
+  const unit = rowUnit(record);
+  const rows = [
+    ["Field", "Value"],
+    ["GRN Number", grnNumber(record)],
+    ["Date/Time", dateText(finalizedDate(record), true)],
+    ["Invoice Number", valueOf(inward, "invoiceChallanNo", "invoice_challan_no", "invoice_no", "challan_no")],
+    ["PO Number", valueOf(inward, "purchaseOrder", "purchase_order", "poNumber", "po_number")],
+    ["Product", rowProduct(record)],
+    ["Supplier", rowSupplier(record)],
+    ["Receiving Location", rowLocation(record)],
+    ["Declared Quantity", quantityText(rowDeclared(record), unit)],
+    ["Kanta/Received Quantity", quantityText(rowReceived(record), unit)],
+    ["Unit", unit],
+    ["COA", valueOf(inward, "coaFileUrl", "coa_file_url", "supplier_coa_path")],
+    ["Invoice", valueOf(inward, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path")],
+    ["Purchase Order", valueOf(inward, "poFileUrl", "po_file_url", "purchase_order_file_url")],
+    ["Kanta Slip", valueOf(kanta, "kantaSlipUrl", "kanta_slip_url")],
+    ["Remark", valueOf(record, "remark", "note", "notes")],
+    ["Status", valueOf(record, "status")]
+  ];
+  const csv = rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${grnNumber(record)}.csv`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function showDetails(record) {
@@ -251,11 +292,11 @@ async function showDetails(record) {
     const inward = enriched.inward || {};
     const kanta = enriched.kanta || {};
     const unit = rowUnit(enriched);
-    const declaredQty = valueOf(kanta, "declaredQuantity", "declared_quantity") || valueOf(inward, "declaredQuantity", "declared_quantity", "quantity");
+    const declaredQty = valueOf(inward, "declaredQuantity", "declared_quantity", "quantity");
     const receivedQty = rowReceived(enriched);
-    const note = valueOf(enriched, "note", "notes") || "N/A";
+    const note = valueOf(enriched, "remark", "note", "notes") || "N/A";
     const detail = (label, value) => `<div><span>${label}</span><strong>${escapeHTML(value || "—")}</strong></div>`;
-    const linkedDoc = (label, source, ...keys) => `<div><span>${label}</span><strong>${documentLink(valueOf(source, ...keys), label)}</strong></div>`;
+    const linkedDoc = (label, ...keys) => `<div><span>${label}</span><strong>${documentLink(valueOf(enriched, ...keys) || valueOf(inward, ...keys) || valueOf(kanta, ...keys), label)}</strong></div>`;
     body.innerHTML = `
       <section class="drawer-section"><h3>GRN Details</h3><div class="detail-grid">
         ${detail("GRN Number", grnNumber(enriched))}
@@ -266,19 +307,19 @@ async function showDetails(record) {
         ${detail("Product", rowProduct(enriched))}
         ${detail("Supplier", rowSupplier(enriched))}
         ${detail("Receiving Location", rowLocation(enriched))}
-        ${detail("Kanta Declared Qty", quantityText(declaredQty, unit))}
-        ${detail("Kanta Received Qty", quantityText(receivedQty, unit))}
+        ${detail("Declared Quantity", quantityText(declaredQty, unit))}
+        ${detail("Kanta/Received Quantity", quantityText(receivedQty, unit))}
         ${detail("Unit", unit)}
         ${detail("Status", valueOf(enriched, "status"))}
-        ${detail("Notes", note)}
+        ${detail("Remark", note)}
         ${detail("Inward ID", valueOf(enriched, "inwardId", "inward_id"))}
         ${detail("Kanta ID", valueOf(enriched, "kantaId", "kanta_id"))}
       </div></section>
       <section class="drawer-section"><h3>Documents</h3><div class="detail-grid">
-        ${linkedDoc("COA", inward, "coaFileUrl", "coa_file_url", "supplier_coa_path")}
-        ${linkedDoc("Invoice", inward, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path")}
-        ${linkedDoc("Purchase Order", inward, "poFileUrl", "po_file_url", "purchase_order_file_url")}
-        ${linkedDoc("Kanta Slip", kanta, "kantaSlipUrl", "kanta_slip_url")}
+        ${linkedDoc("COA", "coaFileUrl", "coa_file_url", "supplier_coa_path")}
+        ${linkedDoc("Invoice", "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path")}
+        ${linkedDoc("Purchase Order", "poFileUrl", "po_file_url", "purchase_order_file_url")}
+        ${linkedDoc("Kanta Slip", "kantaSlipUrl", "kanta_slip_url")}
       </div></section>`;
   } catch (error) {
     console.error("Unable to show accepted GRN details.", error);
@@ -287,9 +328,43 @@ async function showDetails(record) {
 }
 
 body.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-view-id]");
-  const record = records.find((item) => item.id === button?.dataset.viewId);
-  if (record) showDetails(record);
+  const viewButton = event.target.closest("[data-view-id]");
+  const deleteButton = event.target.closest("[data-delete-id]");
+  const downloadButton = event.target.closest("[data-download-id]");
+  if (viewButton) {
+    const record = records.find((item) => item.id === viewButton.dataset.viewId);
+    if (record) showDetails(record);
+  }
+  if (deleteButton) {
+    selectedDeleteId = deleteButton.dataset.deleteId;
+    document.getElementById("deleteMessage").textContent = "";
+    deleteConfirmation.hidden = false;
+    deleteConfirmation.setAttribute("aria-hidden", "false");
+    document.getElementById("confirmDelete").focus();
+  }
+  if (downloadButton) {
+    const record = records.find((item) => item.id === downloadButton.dataset.downloadId);
+    if (record) downloadGrn(record);
+  }
+});
+
+function closeDeleteConfirmation() {
+  deleteConfirmation.hidden = true;
+  deleteConfirmation.setAttribute("aria-hidden", "true");
+  selectedDeleteId = "";
+}
+
+document.getElementById("cancelDelete").addEventListener("click", closeDeleteConfirmation);
+document.getElementById("confirmDelete").addEventListener("click", () => {
+  const record = records.find((item) => item.id === selectedDeleteId);
+  if (!record) {
+    document.getElementById("deleteMessage").textContent = "This GRN is no longer loaded. Refresh and try again.";
+    return;
+  }
+  document.getElementById("deleteMessage").textContent = "Deletion was not performed. Inventory and Stock Ledger reversal is not supported by the current workflow.";
+});
+deleteConfirmation.addEventListener("click", (event) => {
+  if (event.target === deleteConfirmation) closeDeleteConfirmation();
 });
 
 [searchInput, fromDate, toDate, productFilter, supplierFilter, locationFilter, statusFilter].forEach((control) => {

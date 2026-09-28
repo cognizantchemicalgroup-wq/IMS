@@ -1,17 +1,21 @@
-import { auth, db } from "./firebase-config.js";
-import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { db } from "./firebase-config.js";
 import {
   collection,
   doc,
-  getDoc,
   getDocs,
   limit,
   orderBy,
   query,
   runTransaction,
-  serverTimestamp,
-  where
+  serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+export const OUTWARD_PACKAGING_RULE = [
+  { material_name: "Empty Box", quantity_per_box: 1, unit: "Pieces" },
+  { material_name: "2.5 Litre Bottle", quantity_per_box: 4, unit: "Pieces" },
+  { material_name: "Thermocol", quantity_per_box: 2, unit: "Pieces" },
+  { material_name: "Box Plate", quantity_per_box: 2, unit: "Pieces" }
+];
 
 function valueOf(record, ...keys) {
   for (const key of keys) {
@@ -37,30 +41,22 @@ export function packagingStockId(customerId, materialId) {
   return `${idPart(customerId)}__${idPart(materialId)}`;
 }
 
-function currentUser() {
-  if (auth.currentUser) return Promise.resolve(auth.currentUser);
-  return new Promise((resolve, reject) => {
-    let unsubscribe = () => {};
-    unsubscribe = onAuthStateChanged(auth, (user) => {
-      unsubscribe();
-      resolve(user);
-    }, reject);
-  });
+function packagingUnitStockId(customerId, materialId, unit) {
+  return `${packagingStockId(customerId, materialId)}__${idPart(unit)}`;
 }
 
-export async function requireActiveUser() {
-  const user = await currentUser();
-  if (!user?.email) throw new Error("Sign in with an authorized CCPL IMS account to continue.");
-  const usersQuery = query(collection(db, "users"), where("email", "==", user.email), limit(1));
-  const usersSnapshot = await getDocs(usersQuery);
-  if (!usersSnapshot.empty && usersSnapshot.docs[0].data().active === true) return user;
-  const userDocument = await getDoc(doc(db, "users", user.email));
-  if (userDocument.exists() && userDocument.data().active === true) return user;
-  throw new Error("Access denied. Your account is not authorized to access CCPL IMS.");
-}
-
-function actorFor(user) {
-  return { uid: user.uid, email: user.email || "", name: user.displayName || "" };
+function receiptIdFor(customerId, reference, lines) {
+  const identity = normalizedName(reference)
+    ? `reference|${customerId}|${normalizedName(reference).toLocaleLowerCase()}`
+    : `lines|${customerId}|${lines.map((line) => `${line.material_id}|${line.unit.toLowerCase()}|${line.quantity}`).sort().join(";")}`;
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < identity.length; index += 1) {
+    const code = identity.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ code, 0x85ebca6b);
+  }
+  return `receipt_${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function positiveQuantity(value, label) {
@@ -84,38 +80,181 @@ function getProductQuantity(stock) {
 }
 
 export async function loadPackagingStock() {
-  await requireActiveUser();
   const snapshot = await getDocs(collection(db, "packaging_stock"));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
+export async function loadPackagingCustomers() {
+  const snapshot = await getDocs(collection(db, "customers"));
+  return snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data(), name: normalizedName(valueOf(item.data(), "name", "customer_name", "customerName", "customer", "display_name")) }))
+    .filter((customer) => customer.name && customer.active !== false && customer.is_active !== false && String(customer.status || "ACTIVE").toUpperCase() !== "INACTIVE")
+    .sort((first, second) => first.name.localeCompare(second.name));
+}
+
+export async function addPackagingCustomer(value) {
+  const name = normalizedName(value);
+  if (!name) throw new Error("Enter a customer name.");
+
+  const customers = await getDocs(collection(db, "customers"));
+  const existing = customers.docs.find((item) => normalizedName(valueOf(item.data(), "name", "customer_name", "customerName", "customer", "display_name")).toLocaleLowerCase() === name.toLocaleLowerCase());
+  if (existing) return { id: existing.id, ...existing.data(), name: normalizedName(valueOf(existing.data(), "name", "customer_name", "customerName", "customer", "display_name")) };
+
+  const customerRef = doc(db, "customers", packagingEntityId(name));
+  const timestamp = serverTimestamp();
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(customerRef);
+    if (snapshot.exists()) return { id: snapshot.id, ...snapshot.data(), name: normalizedName(valueOf(snapshot.data(), "name", "customer_name", "customerName", "customer", "display_name")) };
+    const customer = { id: customerRef.id, name, active: true, status: "ACTIVE", created_at: timestamp };
+    transaction.set(customerRef, customer);
+    return customer;
+  });
+}
+
+export async function savePackagingStockReceipt(payload) {
+  const customerName = normalizedName(payload.customer);
+  if (!customerName) throw new Error("Select a customer.");
+  if (!Array.isArray(payload.materials) || payload.materials.length === 0) throw new Error("Add at least one packaging material.");
+
+  const customerId = packagingEntityId(customerName);
+  const reference = normalizedName(payload.reference);
+  const remark = normalizedName(payload.remark);
+  const receiptLines = payload.materials.map((line) => {
+    const materialName = normalizedName(line.material);
+    const unit = normalizedName(line.unit);
+    const quantity = positiveQuantity(line.quantity, "Received quantity");
+    if (!materialName) throw new Error("Packaging material is required.");
+    if (!unit) throw new Error("Unit is required.");
+    return { material_id: packagingEntityId(materialName), material_name: materialName, quantity, unit };
+  });
+  const receiptId = receiptIdFor(customerId, reference, receiptLines);
+  const receiptRef = doc(db, "packaging_receipts", receiptId);
+  const transactionRefs = receiptLines.map((_, index) => doc(db, "packaging_transactions", `${receiptId}_${index + 1}_IN`));
+  const entriesByStock = new Map();
+  receiptLines.forEach((line) => {
+    const unitStockId = packagingUnitStockId(customerId, line.material_id, line.unit);
+    const entry = entriesByStock.get(unitStockId);
+    if (entry) entry.quantity += line.quantity;
+    else entriesByStock.set(unitStockId, {
+      materialId: line.material_id,
+      materialName: line.material_name,
+      unit: line.unit,
+      quantity: line.quantity,
+      unitStockId,
+      legacyStockId: packagingStockId(customerId, line.material_id)
+    });
+  });
+
+  const entries = [...entriesByStock.values()];
+  const references = new Map();
+  entries.forEach((entry) => {
+    [entry.legacyStockId, entry.unitStockId].forEach((id) => references.set(id, doc(db, "packaging_stock", id)));
+  });
+  await runTransaction(db, async (transaction) => {
+    const stockRefs = [...references.values()];
+    const refs = [receiptRef, ...stockRefs, ...transactionRefs];
+    const snapshots = await Promise.all(refs.map((reference) => transaction.get(reference)));
+    if (snapshots[0].exists()) throw new Error("This receipt has already been saved.");
+    const stockSnapshots = snapshots.slice(1, 1 + stockRefs.length);
+    const transactionSnapshots = snapshots.slice(1 + stockRefs.length);
+    if (transactionSnapshots.some((snapshot) => snapshot.exists())) throw new Error("History transactions already exist for this receipt.");
+    const snapshotById = new Map(stockRefs.map((reference, index) => [reference.id, stockSnapshots[index]]));
+    const updates = entries.map((entry) => {
+      const legacySnapshot = snapshotById.get(entry.legacyStockId);
+      const unitSnapshot = snapshotById.get(entry.unitStockId);
+      const legacyUnit = legacySnapshot?.exists() ? normalizedName(valueOf(legacySnapshot.data(), "unit")) : "";
+      const targetRef = legacySnapshot?.exists() && legacyUnit.toLowerCase() === entry.unit.toLowerCase()
+        ? references.get(entry.legacyStockId)
+        : references.get(entry.unitStockId);
+      const targetSnapshot = targetRef.id === entry.legacyStockId ? legacySnapshot : unitSnapshot;
+      const previous = targetSnapshot?.exists() ? targetSnapshot.data() : {};
+      if (targetSnapshot?.exists() && normalizedName(valueOf(previous, "unit")).toLowerCase() !== entry.unit.toLowerCase()) {
+        throw new Error(`${entry.materialName} already has a stock record with a different unit.`);
+      }
+      const receivedValue = valueOf(previous, "received_quantity", "receivedQuantity");
+      const consumedValue = valueOf(previous, "consumed_quantity", "consumedQuantity");
+      const availableValue = valueOf(previous, "available_quantity", "availableQuantity", "current_stock", "currentStock");
+      const consumed = consumedValue === "" ? 0 : Number(consumedValue);
+      const available = availableValue === "" ? 0 : Number(availableValue);
+      const received = receivedValue === "" ? available + consumed : Number(receivedValue);
+      if (![received, consumed, available].every(Number.isFinite) || received < 0 || consumed < 0 || available < 0) {
+        throw new Error(`${entry.materialName} stock totals are invalid. The receipt was not saved.`);
+      }
+      return { entry, targetRef, previous, received, consumed, available };
+    });
+
+    const timestamp = serverTimestamp();
+    updates.forEach(({ entry, targetRef, previous, received, consumed, available }) => {
+      transaction.set(targetRef, {
+        id: targetRef.id,
+        customer_id: customerId,
+        customer_name: customerName,
+        material_id: entry.materialId,
+        material_name: entry.materialName,
+        unit: entry.unit,
+        received_quantity: received + entry.quantity,
+        consumed_quantity: consumed,
+        available_quantity: available + entry.quantity,
+        created_at: valueOf(previous, "created_at", "createdAt") || timestamp,
+        updated_at: timestamp,
+        last_transaction_id: transactionRefs[receiptLines.findIndex((line) => line.material_id === entry.materialId && line.unit.toLowerCase() === entry.unit.toLowerCase())].id
+      }, { merge: true });
+    });
+
+    transaction.set(receiptRef, {
+      id: receiptId,
+      customer_id: customerId,
+      customer_name: customerName,
+      reference,
+      remark,
+      materials: receiptLines,
+      status: "RECEIVED",
+      created_at: timestamp
+    });
+    receiptLines.forEach((line, index) => {
+      transaction.set(transactionRefs[index], {
+        id: transactionRefs[index].id,
+        customer_id: customerId,
+        customer_name: customerName,
+        material_id: line.material_id,
+        material_name: line.material_name,
+        transaction_type: "IN",
+        quantity: line.quantity,
+        unit: line.unit,
+        reference_id: receiptId,
+        reference: reference || receiptId,
+        reference_type: "PACKAGING_RECEIPT",
+        receipt_id: receiptId,
+        created_at: timestamp,
+        remark
+      });
+    });
+  });
+  return receiptId;
+}
+
 export async function loadPackagingConfigurations() {
-  await requireActiveUser();
   const snapshot = await getDocs(query(collection(db, "packaging_configurations"), orderBy("created_at", "desc")));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
 export async function loadPackagingTransactions() {
-  await requireActiveUser();
   const snapshot = await getDocs(query(collection(db, "packaging_transactions"), orderBy("created_at", "desc"), limit(500)));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
 export async function loadProductStock() {
-  await requireActiveUser();
   const snapshot = await getDocs(collection(db, "stock"));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
     .filter((item) => valueOf(item, "product_id", "productId", "product_name", "productName", "product"));
 }
 
 export async function loadOutwardRecords() {
-  await requireActiveUser();
   const snapshot = await getDocs(query(collection(db, "outward"), orderBy("created_at", "desc"), limit(100)));
   return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
 }
 
 export async function savePackagingReceipt(payload) {
-  const user = await requireActiveUser();
   const customerName = normalizedName(payload.customer);
   if (!customerName) throw new Error("Select a customer.");
   if (!Array.isArray(payload.materials) || payload.materials.length === 0) throw new Error("Add at least one packaging material.");
@@ -130,7 +269,6 @@ export async function savePackagingReceipt(payload) {
   });
   const customerId = packagingEntityId(customerName);
   const receiptRef = doc(collection(db, "packaging_receipts"));
-  const actor = actorFor(user);
   const timestamp = serverTimestamp();
   const stockEntries = new Map();
   receiptLines.forEach((line) => {
@@ -190,7 +328,6 @@ export async function savePackagingReceipt(payload) {
       materials: receiptLines,
       status: "RECEIVED",
       created_at: timestamp,
-      created_by: actor
     });
     receiptLines.forEach((line, index) => {
       transaction.set(transactionRefs[index], {
@@ -207,7 +344,6 @@ export async function savePackagingReceipt(payload) {
         reference_type: "PACKAGING_RECEIPT",
         receipt_id: receiptRef.id,
         created_at: timestamp,
-        created_by: actor,
         remark: normalizedName(payload.remark)
       });
     });
@@ -216,7 +352,6 @@ export async function savePackagingReceipt(payload) {
 }
 
 export async function savePackagingConfiguration(configuration) {
-  const user = await requireActiveUser();
   const name = normalizedName(configuration.name);
   const customerName = normalizedName(configuration.customer);
   const productName = normalizedName(configuration.product);
@@ -237,7 +372,6 @@ export async function savePackagingConfiguration(configuration) {
   const configurationRef = configuration.id
     ? doc(db, "packaging_configurations", configuration.id)
     : doc(collection(db, "packaging_configurations"));
-  const actor = actorFor(user);
   const timestamp = serverTimestamp();
   await runTransaction(db, async (transaction) => {
     const snapshot = await transaction.get(configurationRef);
@@ -253,15 +387,12 @@ export async function savePackagingConfiguration(configuration) {
       active: true,
       created_at: snapshot.exists() ? valueOf(snapshot.data(), "created_at", "createdAt") || timestamp : timestamp,
       updated_at: timestamp,
-      created_by: snapshot.exists() ? valueOf(snapshot.data(), "created_by", "createdBy") || actor : actor,
-      updated_by: actor
     }, { merge: true });
   });
   return { id: configurationRef.id, name, customer: customerName, product: productName, materials, status: "ACTIVE" };
 }
 
 export async function saveOutwardDraft(payload, existingId = "") {
-  const user = await requireActiveUser();
   const customerName = normalizedName(payload.customer);
   const productName = normalizedName(payload.product_name);
   const location = normalizedName(payload.location);
@@ -271,26 +402,19 @@ export async function saveOutwardDraft(payload, existingId = "") {
   if (!customerName) throw new Error("Customer is required.");
   if (!productName) throw new Error("Product is required.");
   if (!location || !productStockId) throw new Error("Select a valid product stock location.");
-  if (!payload.configuration_id) throw new Error("Packaging configuration is required.");
   if (!Number.isInteger(boxes) || boxes <= 0) throw new Error("Number of boxes must be a whole number greater than zero.");
   const outwardRef = existingId ? doc(db, "outward", existingId) : doc(collection(db, "outward"));
-  const userRecord = actorFor(user);
   const timestamp = serverTimestamp();
   await runTransaction(db, async (transaction) => {
-    const [outwardSnapshot, configurationSnapshot, productStockSnapshot] = await Promise.all([
+    const [outwardSnapshot, productStockSnapshot] = await Promise.all([
       transaction.get(outwardRef),
-      transaction.get(doc(db, "packaging_configurations", payload.configuration_id)),
       transaction.get(doc(db, "stock", productStockId))
     ]);
     if (outwardSnapshot.exists() && String(valueOf(outwardSnapshot.data(), "status")).toUpperCase() !== "DRAFT") {
       throw new Error("Only a draft Outward can be edited.");
     }
-    if (!configurationSnapshot.exists()) throw new Error("The selected packaging configuration no longer exists.");
     if (!productStockSnapshot.exists()) throw new Error("The selected product stock record no longer exists.");
-    const recipe = configurationSnapshot.data();
     const stock = productStockSnapshot.data();
-    if (valueOf(recipe, "customer_id") !== packagingEntityId(customerName)) throw new Error("Configuration customer does not match the selected customer.");
-    if (valueOf(recipe, "product_name") !== productName) throw new Error("Configuration product does not match the selected product.");
     if (valueOf(stock, "receiving_location", "location") !== location) throw new Error("Selected product stock location changed. Refresh and try again.");
     transaction.set(outwardRef, {
       id: outwardRef.id,
@@ -299,27 +423,23 @@ export async function saveOutwardDraft(payload, existingId = "") {
       customer_name: customerName,
       product_id: valueOf(stock, "product_id", "productId") || null,
       product_name: productName,
+      from_company: normalizedName(payload.from_company),
       product_stock_id: productStockId,
       product_quantity: productQuantity,
       product_unit: valueOf(stock, "unit", "quantity_unit", "quantityUnit"),
       receiving_location: location,
-      packaging_configuration_id: payload.configuration_id,
-      packaging_configuration_name: valueOf(recipe, "name"),
+      against_po_number: normalizedName(payload.against_po_number),
       number_of_boxes: boxes,
       packaging_stock_updated: false,
       created_at: outwardSnapshot.exists() ? valueOf(outwardSnapshot.data(), "created_at", "createdAt") || timestamp : timestamp,
-      created_by: outwardSnapshot.exists() ? valueOf(outwardSnapshot.data(), "created_by", "createdBy") || userRecord : userRecord,
       updated_at: timestamp,
-      updated_by: userRecord
     }, { merge: true });
   });
   return outwardRef.id;
 }
 
 export async function finalizeOutward(outwardId) {
-  const user = await requireActiveUser();
   if (!outwardId) throw new Error("Save this Outward as a draft before finalizing.");
-  const actor = actorFor(user);
   const outwardRef = doc(db, "outward", outwardId);
 
   return runTransaction(db, async (transaction) => {
@@ -338,19 +458,10 @@ export async function finalizeOutward(outwardId) {
     const boxes = Number(outward.number_of_boxes);
     const productQuantity = positiveQuantity(outward.product_quantity, "Product quantity");
     if (!Number.isInteger(boxes) || boxes <= 0) throw new Error("Number of boxes must be a whole number greater than zero.");
-    const configurationRef = doc(db, "packaging_configurations", outward.packaging_configuration_id);
     const productStockRef = doc(db, "stock", outward.product_stock_id);
-    const configurationSnapshot = await transaction.get(configurationRef);
     const productStockSnapshot = await transaction.get(productStockRef);
-    if (!configurationSnapshot.exists()) throw new Error("The selected packaging configuration no longer exists.");
     if (!productStockSnapshot.exists()) throw new Error("The selected product stock record is missing.");
-    const configuration = configurationSnapshot.data();
     const productStock = productStockSnapshot.data();
-    if (configuration.active !== true || String(valueOf(configuration, "status")).toUpperCase() !== "ACTIVE") {
-      throw new Error("The selected packaging configuration is not active.");
-    }
-    if (valueOf(configuration, "customer_id") !== outward.customer_id) throw new Error("Configuration customer does not match this Outward.");
-    if (valueOf(configuration, "product_name") !== outward.product_name) throw new Error("Configuration product does not match this Outward.");
     const stockProductId = valueOf(productStock, "product_id", "productId");
     const stockProductName = valueOf(productStock, "product_name", "product", "productName");
     const stockLocation = valueOf(productStock, "receiving_location", "location", "receivingLocation");
@@ -363,39 +474,40 @@ export async function finalizeOutward(outwardId) {
     const availableProduct = getProductQuantity(productStock);
     if (availableProduct < productQuantity) throw new Error(`Insufficient product stock. Available: ${availableProduct} ${stockUnit}, Required: ${productQuantity} ${stockUnit}.`);
 
-    const recipeLines = configuration.materials;
-    if (!Array.isArray(recipeLines) || recipeLines.length === 0) throw new Error("The packaging configuration has no materials.");
-    const materialRequirements = recipeLines.map((line) => {
-      const materialName = normalizedName(valueOf(line, "material_name", "material"));
-      const materialId = normalizedName(valueOf(line, "material_id")) || packagingEntityId(materialName);
-      const perBox = Number(valueOf(line, "quantity_per_box", "quantity"));
-      const unit = normalizedName(valueOf(line, "unit"));
-      if (!materialName || !materialId || !unit || !Number.isFinite(perBox) || perBox <= 0) {
-        throw new Error("The packaging configuration contains a missing material or invalid quantity.");
-      }
-      return { materialId, materialName, perBox, required: perBox * boxes, unit };
-    });
-    const seenMaterialIds = new Set();
-    materialRequirements.forEach((item) => {
-      if (seenMaterialIds.has(item.materialId)) throw new Error(`Configuration repeats ${item.materialName}; edit it to use one material row.`);
-      seenMaterialIds.add(item.materialId);
-    });
+    const materialRequirements = OUTWARD_PACKAGING_RULE.map((line) => ({
+      materialId: packagingEntityId(line.material_name),
+      materialName: line.material_name,
+      perBox: line.quantity_per_box,
+      required: line.quantity_per_box * boxes,
+      unit: line.unit
+    }));
 
-    const packageStockRefs = materialRequirements.map((item) => doc(db, "packaging_stock", packagingStockId(outward.customer_id, item.materialId)));
+    const packageStockRefs = materialRequirements.map((item) => ({
+      legacy: doc(db, "packaging_stock", packagingStockId(outward.customer_id, item.materialId)),
+      unit: doc(db, "packaging_stock", packagingUnitStockId(outward.customer_id, item.materialId, item.unit))
+    }));
     const productLedgerId = `${outwardId}_OUT`;
     const productLedgerRef = doc(db, "stockLedger", productLedgerId);
     const packagingTransactionRefs = materialRequirements.map((item) => doc(db, "packaging_transactions", `${outwardId}__${idPart(item.materialId)}__OUT`));
-    const readRefs = [...packageStockRefs, productLedgerRef, ...packagingTransactionRefs];
+    const readRefs = [...packageStockRefs.flatMap((references) => [references.legacy, references.unit]), productLedgerRef, ...packagingTransactionRefs];
     const readSnapshots = await Promise.all(readRefs.map((reference) => transaction.get(reference)));
-    const packageSnapshots = readSnapshots.slice(0, packageStockRefs.length);
-    const productLedgerSnapshot = readSnapshots[packageStockRefs.length];
-    const packagingTransactionSnapshots = readSnapshots.slice(packageStockRefs.length + 1);
+    const packageSnapshots = materialRequirements.map((_, index) => ({
+      legacy: readSnapshots[index * 2],
+      unit: readSnapshots[index * 2 + 1]
+    }));
+    const productLedgerSnapshot = readSnapshots[packageStockRefs.length * 2];
+    const packagingTransactionSnapshots = readSnapshots.slice(packageStockRefs.length * 2 + 1);
     if (productLedgerSnapshot.exists() || packagingTransactionSnapshots.some((snapshot) => snapshot.exists())) {
       throw new Error("A stock transaction already exists for this Outward. No additional deduction was made.");
     }
 
     const deductions = materialRequirements.map((requirement, index) => {
-      const stockSnapshot = packageSnapshots[index];
+      const candidates = packageSnapshots[index];
+      const legacyUnit = candidates.legacy.exists() ? normalizedName(valueOf(candidates.legacy.data(), "unit")) : "";
+      const stockSnapshot = candidates.legacy.exists() && legacyUnit.toLowerCase() === requirement.unit.toLowerCase()
+        ? candidates.legacy
+        : candidates.unit;
+      const stockRef = stockSnapshot === candidates.legacy ? packageStockRefs[index].legacy : packageStockRefs[index].unit;
       if (!stockSnapshot.exists()) throw new Error(`No packaging stock record exists for ${requirement.materialName} for ${outward.customer_name}.`);
       const stock = stockSnapshot.data();
       if (valueOf(stock, "customer_id") !== outward.customer_id || valueOf(stock, "material_id") !== requirement.materialId) {
@@ -416,7 +528,7 @@ export async function finalizeOutward(outwardId) {
       if (!Number.isFinite(consumed) || consumed < 0 || !Number.isFinite(received) || received < 0) {
         throw new Error(`Packaging stock totals are invalid for ${requirement.materialName}.`);
       }
-      return { ...requirement, available, consumed, received, stockSnapshot, stockRef: packageStockRefs[index], transactionRef: packagingTransactionRefs[index] };
+      return { ...requirement, available, consumed, received, stockSnapshot, stockRef, transactionRef: packagingTransactionRefs[index] };
     });
 
     const currentProductIssuedRaw = valueOf(productStock, "total_issued", "totalIssued");
@@ -428,6 +540,7 @@ export async function finalizeOutward(outwardId) {
     }
 
     const timestamp = serverTimestamp();
+    const remainingProduct = getProductQuantity(productStock) - productQuantity;
     deductions.forEach((item) => {
       transaction.update(item.stockRef, {
         available_quantity: item.available - item.required,
@@ -445,16 +558,13 @@ export async function finalizeOutward(outwardId) {
         quantity: -item.required,
         unit: item.unit,
         reference_id: outwardId,
-        reference: outwardId,
+        reference: "Outward Entry",
         reference_type: "OUTWARD",
         outward_id: outwardId,
         product_id: outward.product_id || null,
         product_name: outward.product_name,
-        packaging_configuration_id: outward.packaging_configuration_id,
-        packaging_configuration_name: outward.packaging_configuration_name,
         number_of_boxes: boxes,
         created_at: timestamp,
-        created_by: actor,
         remark: "Packaging consumed for finalized Outward."
       });
     });
@@ -478,16 +588,24 @@ export async function finalizeOutward(outwardId) {
       unit: stockUnit,
       reference_type: "OUTWARD",
       reference_id: outwardId,
-      created_at: timestamp,
-      created_by: actor
+      created_at: timestamp
     });
     transaction.update(outwardRef, {
       status: "DISPATCHED",
       finalized_at: timestamp,
-      finalized_by: actor,
       packaging_stock_updated: true,
       packaging_stock_updated_at: timestamp,
       packaging_transaction_ids: deductions.map((item) => item.transactionRef.id),
+      product_stock_before: currentProduct,
+      product_stock_after: remainingProduct,
+      packaging_used: deductions.map((item) => ({
+        material_id: item.materialId,
+        material_name: item.materialName,
+        quantity: item.required,
+        unit: item.unit,
+        previous_stock: item.available,
+        remaining_stock: item.available - item.required
+      })),
       product_stock_updated: true,
       product_transaction_id: productLedgerId,
       updated_at: timestamp

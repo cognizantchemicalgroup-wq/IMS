@@ -3,6 +3,8 @@ import { initDocumentPreview } from "./document-preview.js";
 import {
   collection,
   doc,
+  getDoc,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -31,6 +33,8 @@ const grnDrawer = document.getElementById("grnDrawer");
 const grnDrawerBody = document.getElementById("grnDrawerBody");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
 const closeGrnDrawer = document.getElementById("closeGrnDrawer");
+const exportRangeModal = document.getElementById("exportRangeModal");
+const exportRangeForm = document.getElementById("exportRangeForm");
 let pendingEntries = [];
 let kantaRecords = [];
 let inwardRecords = [];
@@ -70,6 +74,76 @@ function matchesDateRange(record, fromDate, toDate) {
   if (fromDate && localDate < fromDate) return false;
   if (toDate && localDate > toDate) return false;
   return true;
+}
+
+function finalizedAtDate(record) {
+  const value = valueOf(record, "finalizedAt", "finalized_at");
+  if (!value) return null;
+  if (typeof value.toDate === "function") return value.toDate();
+  if (typeof value === "object" && Number.isFinite(value.seconds)) return new Date(value.seconds * 1000);
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function exportAcceptedGrns(fromDate, toDate) {
+  const snapshot = await getDocs(query(collection(db, "grn"), orderBy("finalizedAt", "desc")));
+  const selected = snapshot.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((grn) => {
+      if (String(valueOf(grn, "status")).toUpperCase() !== "GRN FINALIZED") return false;
+      const date = finalizedAtDate(grn);
+      if (!date) return false;
+      const dateKey = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      return dateKey >= fromDate && dateKey <= toDate;
+    });
+  const entries = await Promise.all(selected.map(async (grn) => {
+    const inwardId = valueOf(grn, "inwardId", "inward_id");
+    const kantaId = valueOf(grn, "kantaId", "kanta_id");
+    const [inwardSnapshot, kantaSnapshot] = await Promise.all([
+      inwardId ? getDoc(doc(db, "inward", inwardId)) : Promise.resolve(null),
+      kantaId ? getDoc(doc(db, "kanta", kantaId)) : Promise.resolve(null)
+    ]);
+    const inward = inwardSnapshot?.exists() ? inwardSnapshot.data() : {};
+    const kanta = kantaSnapshot?.exists() ? kantaSnapshot.data() : {};
+    const unit = acceptedValue(grn, inward, kanta, "unit", "quantityUnit", "quantity_unit");
+    return [
+      valueOf(grn, "grnNumber", "grn_number", "grnNo", "grn_no") || grn.id,
+      finalizedAtDate(grn)?.toLocaleString() || "",
+      valueOf(inward, "invoiceChallanNo", "invoice_challan_no", "invoice_no", "challan_no"),
+      valueOf(inward, "purchaseOrder", "purchase_order", "poNumber", "po_number"),
+      acceptedValue(grn, inward, kanta, "product", "product_name"),
+      valueOf(inward, "supplier", "supplier_name"),
+      acceptedValue(grn, inward, kanta, "receivingLocation", "receiving_location", "location"),
+      valueOf(inward, "declaredQuantity", "declared_quantity", "quantity"),
+      valueOf(kanta, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight"),
+      unit,
+      documentUrl(grn, inward, kanta, "coaFileUrl", "coa_file_url", "supplier_coa_path"),
+      documentUrl(grn, inward, kanta, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path"),
+      documentUrl(grn, inward, kanta, "poFileUrl", "po_file_url", "purchase_order_file_url"),
+      documentUrl(grn, inward, kanta, "kantaSlipUrl", "kanta_slip_url"),
+      valueOf(grn, "remark", "note", "notes"),
+      valueOf(grn, "status")
+    ];
+  }));
+  const header = ["GRN Number", "Finalized Date/Time", "Invoice Number", "PO Number", "Product", "Supplier", "Receiving Location", "Declared Qty", "Received Qty", "Unit", "COA URL", "Invoice URL", "Purchase Order URL", "Kanta Slip URL", "Remark", "Status"];
+  downloadCsv(`accepted-grn-${fromDate}-to-${toDate}.csv`, [header, ...entries]);
+  return entries.length;
 }
 
 function getSearchSuggestions(entries, keyOptions) {
@@ -126,8 +200,8 @@ function matchesSearch(entry, searchBy, searchValue, fromDate, toDate) {
 
 function documentLink(url, title = "Document") {
   return url
-    ? `<button class="row-action" type="button" data-preview-url="${escapeHTML(url)}" data-preview-title="${escapeHTML(title)}">Open</button>`
-    : `<span>Document not available</span>`;
+    ? `<button class="row-action" type="button" data-preview-url="${escapeHTML(url)}" data-preview-title="${escapeHTML(title)}">View</button>`
+    : `<span>Not Available</span>`;
 }
 
 function openGrnDrawer() {
@@ -162,10 +236,14 @@ function acceptedValue(grn, inward, kanta, ...keys) {
   return valueOf(grn, ...keys) || valueOf(inward || {}, ...keys) || valueOf(kanta || {}, ...keys);
 }
 
+function documentUrl(grn, inward, kanta, ...keys) {
+  return valueOf(grn, ...keys) || valueOf(inward || {}, ...keys) || valueOf(kanta || {}, ...keys);
+}
+
 function quantityText(quantity, unit) {
   if (quantity === "") return "—";
   const value = String(quantity);
-  return unit && !value.toLowerCase().includes(String(unit).toLowerCase()) ? `${value} ${unit}` : value;
+  return unit && Number.isFinite(Number(value)) ? `${value} ${unit}` : value;
 }
 
 function renderAcceptedRows() {
@@ -174,7 +252,7 @@ function renderAcceptedRows() {
   if (!body || !count) return;
   count.textContent = `${acceptedGrns.length} ${acceptedGrns.length === 1 ? "record" : "records"}`;
   if (!acceptedGrns.length) {
-    body.innerHTML = `<tr><td class="empty-row" colspan="11">No accepted GRNs found</td></tr>`;
+    body.innerHTML = `<tr><td class="empty-row" colspan="12">No accepted GRNs found</td></tr>`;
     return;
   }
 
@@ -184,8 +262,9 @@ function renderAcceptedRows() {
     const product = acceptedValue(grn, inward, kanta, "product", "product_name");
     const location = acceptedValue(grn, inward, kanta, "receivingLocation", "receiving_location", "location");
     const unit = acceptedValue(grn, inward, kanta, "unit", "quantityUnit", "quantity_unit");
+    const declaredQuantity = valueOf(inward || {}, "declaredQuantity", "declared_quantity", "quantity");
     const quantity = valueOf(kanta || {}, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight");
-    const note = valueOf(grn, "note", "notes");
+    const note = valueOf(grn, "remark", "note", "notes");
     const grnNumber = valueOf(grn, "grnNumber", "grn_number", "grnNo", "grn_no") || grn.id;
     return `<tr>
       <td>${escapeHTML(grnNumber)}</td>
@@ -195,6 +274,7 @@ function renderAcceptedRows() {
       <td>${escapeHTML(product || "—")}</td>
       <td>${escapeHTML(valueOf(inward || {}, "supplier", "supplier_name") || "—")}</td>
       <td>${escapeHTML(location || "—")}</td>
+      <td>${escapeHTML(quantityText(declaredQuantity, unit))}</td>
       <td>${escapeHTML(quantity === "" ? "—" : `${quantity}${unit ? ` ${unit}` : ""}`)}</td>
       <td><span class="status-tag success">${escapeHTML(valueOf(grn, "status") || "GRN FINALIZED")}</span></td>
       <td><span class="accepted-note" title="${escapeHTML(note || "N/A")}">${escapeHTML(note || "N/A")}</span></td>
@@ -216,11 +296,10 @@ function openAcceptedGrnDetails(grn) {
   const product = acceptedValue(grn, inward, kanta, "product", "product_name");
   const location = acceptedValue(grn, inward, kanta, "receivingLocation", "receiving_location", "location");
   const unit = acceptedValue(grn, inward, kanta, "unit", "quantityUnit", "quantity_unit");
-  const declaredQty = valueOf(kanta || {}, "declaredQuantity", "declared_quantity") || valueOf(inward || {}, "declaredQuantity", "declared_quantity", "quantity");
+  const declaredQty = valueOf(inward || {}, "declaredQuantity", "declared_quantity", "quantity");
   const receivedQty = valueOf(kanta || {}, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight");
-  const note = valueOf(grn, "note", "notes");
+  const note = valueOf(grn, "remark", "note", "notes");
   const grnNumber = valueOf(grn, "grnNumber", "grn_number", "grnNo", "grn_no") || grn.id;
-  const documentLinkFor = (title, record, ...keys) => documentLink(valueOf(record || {}, ...keys), title);
   grnDrawer.querySelector(".drawer-label").textContent = "Accepted GRN";
   grnDrawer.querySelector(".drawer-header h3").textContent = String(grnNumber);
   grnDrawerBody.innerHTML = `
@@ -233,19 +312,19 @@ function openAcceptedGrnDetails(grn) {
       <div><span>Product</span><strong>${escapeHTML(product || "—")}</strong></div>
       <div><span>Supplier</span><strong>${escapeHTML(valueOf(inward || {}, "supplier", "supplier_name") || "—")}</strong></div>
       <div><span>Receiving Location</span><strong>${escapeHTML(location || "—")}</strong></div>
-      <div><span>Kanta Declared Qty</span><strong>${escapeHTML(quantityText(declaredQty, unit))}</strong></div>
-      <div><span>Kanta Received Qty</span><strong>${escapeHTML(quantityText(receivedQty, unit))}</strong></div>
+      <div><span>Declared Qty</span><strong>${escapeHTML(quantityText(declaredQty, unit))}</strong></div>
+      <div><span>Kanta / Received Qty</span><strong>${escapeHTML(quantityText(receivedQty, unit))}</strong></div>
       <div><span>Unit</span><strong>${escapeHTML(unit || "—")}</strong></div>
       <div><span>Status</span><strong>${escapeHTML(valueOf(grn, "status") || "—")}</strong></div>
       <div><span>Inward ID</span><strong>${escapeHTML(valueOf(grn, "inwardId", "inward_id") || "—")}</strong></div>
       <div><span>Kanta ID</span><strong>${escapeHTML(valueOf(grn, "kantaId", "kanta_id") || "—")}</strong></div>
-      <div><span>Notes</span><strong>${escapeHTML(note || "N/A")}</strong></div>
+      <div><span>Remark</span><strong>${escapeHTML(note || "N/A")}</strong></div>
     </div></section>
     <section class="drawer-section"><h4>Documents</h4><div class="detail-grid">
-      <div><span>COA</span><strong>${documentLinkFor("COA", inward, "coaFileUrl", "coa_file_url", "supplier_coa_path")}</strong></div>
-      <div><span>Invoice</span><strong>${documentLinkFor("Invoice", inward, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path")}</strong></div>
-      <div><span>Purchase Order</span><strong>${documentLinkFor("Purchase Order", inward, "poFileUrl", "po_file_url", "purchase_order_file_url")}</strong></div>
-      <div><span>Kanta Slip</span><strong>${documentLinkFor("Kanta Slip", kanta, "kantaSlipUrl", "kanta_slip_url")}</strong></div>
+      <div><span>COA</span><strong>${documentLink(documentUrl(grn, inward, kanta, "coaFileUrl", "coa_file_url", "supplier_coa_path"), "COA")}</strong></div>
+      <div><span>Invoice</span><strong>${documentLink(documentUrl(grn, inward, kanta, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path"), "Invoice")}</strong></div>
+      <div><span>Purchase Order</span><strong>${documentLink(documentUrl(grn, inward, kanta, "poFileUrl", "po_file_url", "purchase_order_file_url"), "Purchase Order")}</strong></div>
+      <div><span>Kanta Slip</span><strong>${documentLink(documentUrl(grn, inward, kanta, "kantaSlipUrl", "kanta_slip_url"), "Kanta Slip")}</strong></div>
     </div></section>`;
   openGrnDrawer();
 }
@@ -278,13 +357,14 @@ function renderRows() {
   const filteredEntries = pendingEntries.filter((entry) => matchesSearch(entry, searchBy, searchValue, fromDate, toDate));
   grnCount.textContent = `${filteredEntries.length} record${filteredEntries.length === 1 ? "" : "s"}`;
   if (!filteredEntries.length) {
-    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="11">No records found</td></tr>`;
+    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="14">No records found</td></tr>`;
     return;
   }
 
   grnTableBody.innerHTML = filteredEntries.map((entry) => {
     const kanta = kantaFor(entry);
     const kantaQuantity = Number(valueOf(kanta || {}, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight"));
+      const declaredQuantity = valueOf(entry, "declaredQuantity", "declared_quantity", "quantity");
     const purchaseOrderNo = valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number");
     return `<tr>
       <td>${escapeHTML(dateText(entry))}</td>
@@ -293,9 +373,10 @@ function renderRows() {
       <td>${escapeHTML(valueOf(entry, "product", "product_name"))}</td>
       <td>${escapeHTML(valueOf(entry, "supplier", "supplier_name"))}</td>
       <td>${escapeHTML(valueOf(entry, "receivingLocation", "receiving_location", "location"))}</td>
-      <td>${Number.isFinite(kantaQuantity) && kantaQuantity > 0 ? escapeHTML(kantaQuantity) : "—"}</td>
+      <td>${escapeHTML(quantityText(declaredQuantity, valueOf(entry, "unit", "quantityUnit", "quantity_unit")))}</td>
+      <td>${Number.isFinite(kantaQuantity) && kantaQuantity > 0 ? escapeHTML(quantityText(kantaQuantity, valueOf(entry, "unit", "quantityUnit", "quantity_unit"))) : "—"}</td>
       <td>${documentLink(valueOf(entry, "coaFileUrl", "coa_file_url", "supplier_coa_path"), "COA")}</td>
-      <td>${documentLink(valueOf(entry, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath"), "Invoice")}</td>
+      <td>${documentLink(valueOf(entry, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path"), "Invoice")}</td>
       <td>${documentLink(valueOf(entry, "poFileUrl", "po_file_url", "purchase_order_file_url"), "Purchase Order")}</td>
       <td>${documentLink(valueOf(kanta || {}, "kantaSlipUrl", "kanta_slip_url"), "Kanta Slip")}</td>
       <td><span class="status-tag warning">GRN PENDING</span></td>
@@ -340,23 +421,24 @@ function renderRows() {
 
 function renderEditor(entry) {
   const kanta = kantaFor(entry);
-  const declaredQuantity = Number(valueOf(entry, "declaredQuantity", "declared_quantity", "quantity"));
+  const declaredQuantity = valueOf(entry, "declaredQuantity", "declared_quantity", "quantity");
   const unit = valueOf(entry, "unit", "quantityUnit", "quantity_unit");
   const receivedQty = valueOf(kanta || {}, "receivedQty", "received_quantity", "receivedQuantity", "netWeight", "net_weight");
 
   grnDrawerBody.innerHTML = `
     <div class="drawer-section"><h4>Inward Details</h4><div class="detail-grid">
       <div><span>Industry Type</span><strong>${escapeHTML(valueOf(entry, "industryType", "industry_type"))}</strong></div>
-      <div><span>Purchase Order (PO)</span><strong>${escapeHTML(valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number"))}</strong></div>
+      <div><span>PO Number</span><strong>${escapeHTML(valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number") || "—")}</strong></div>
       <div><span>Invoice / Challan</span><strong>${escapeHTML(valueOf(entry, "invoiceChallanNo", "invoice_challan_no"))}</strong></div>
-      <div><span>PO No.</span><strong>${escapeHTML(valueOf(entry, "purchaseOrder", "purchase_order", "poNumber", "po_number"))}</strong></div>
       <div><span>Supplier</span><strong>${escapeHTML(valueOf(entry, "supplier", "supplier_name"))}</strong></div>
       <div><span>Product</span><strong>${escapeHTML(valueOf(entry, "product", "product_name"))}</strong></div>
       <div><span>Receiving Location</span><strong>${escapeHTML(valueOf(entry, "receivingLocation", "receiving_location", "location"))}</strong></div>
-      <div><span>Declared Quantity</span><strong>${escapeHTML(declaredQuantity)} ${escapeHTML(unit)}</strong></div>
+      <div><span>Declared Quantity</span><strong>${escapeHTML(quantityText(declaredQuantity, unit))}</strong></div>
       <div><span>Received Qty</span><strong>${escapeHTML(receivedQty === "" ? "Unavailable" : `${receivedQty} ${unit}`)}</strong></div>
-      <div><span>Purchase Order</span><strong>${documentLink(valueOf(entry, "poFileUrl", "po_file_url", "purchase_order_file_url"))}</strong></div>
-      <div><span>Kanta Slip</span><strong>${documentLink(valueOf(kanta || {}, "kantaSlipUrl", "kanta_slip_url"))}</strong></div>
+      <div><span>COA</span><strong>${documentLink(valueOf(entry, "coaFileUrl", "coa_file_url", "supplier_coa_path"), "COA")}</strong></div>
+      <div><span>Invoice</span><strong>${documentLink(valueOf(entry, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_file_path"), "Invoice")}</strong></div>
+      <div><span>Purchase Order</span><strong>${documentLink(valueOf(entry, "poFileUrl", "po_file_url", "purchase_order_file_url"), "Purchase Order")}</strong></div>
+      <div><span>Kanta Slip</span><strong>${documentLink(valueOf(kanta || {}, "kantaSlipUrl", "kanta_slip_url"), "Kanta Slip")}</strong></div>
     </div></div>
     <div class="drawer-section"><h4>GRN Finalize</h4><form id="grnForm" class="drawer-form" novalidate>
       <div class="field-grid">
@@ -528,6 +610,39 @@ function renderEditor(entry) {
 }
 
 function listen() {
+  document.getElementById("exportAcceptedGrn").addEventListener("click", () => {
+    document.getElementById("exportRangeMessage").textContent = "";
+    exportRangeModal.hidden = false;
+    document.getElementById("exportFromDate").focus();
+  });
+  document.getElementById("cancelExport").addEventListener("click", () => {
+    exportRangeModal.hidden = true;
+  });
+  exportRangeModal.addEventListener("click", (event) => {
+    if (event.target === exportRangeModal) exportRangeModal.hidden = true;
+  });
+  exportRangeForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fromDate = document.getElementById("exportFromDate").value;
+    const toDate = document.getElementById("exportToDate").value;
+    const message = document.getElementById("exportRangeMessage");
+    if (!fromDate || !toDate || fromDate > toDate) {
+      message.textContent = "Select a valid date range.";
+      return;
+    }
+    const submitButton = exportRangeForm.querySelector("button[type=submit]");
+    submitButton.disabled = true;
+    try {
+      const count = await exportAcceptedGrns(fromDate, toDate);
+      message.textContent = count ? `${count} finalized GRN${count === 1 ? "" : "s"} exported.` : "No finalized GRNs were found in this date range.";
+      if (count) exportRangeModal.hidden = true;
+    } catch (error) {
+      console.error("Unable to export accepted GRNs.", error);
+      message.textContent = "GRNs could not be exported. Please try again.";
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
   grnSearchBy.addEventListener("change", () => {
     updateGrnSearchUI();
     renderRows();
@@ -542,7 +657,7 @@ function listen() {
     renderRows();
   }, (error) => {
     console.error("Unable to load GRN pending records.", error);
-    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="11">Unable to load records. Please refresh and try again.</td></tr>`;
+    grnTableBody.innerHTML = `<tr><td class="empty-row" colspan="14">Unable to load records. Please refresh and try again.</td></tr>`;
   });
   onSnapshot(collection(db, "kanta"), (snapshot) => {
     kantaRecords = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
@@ -566,7 +681,7 @@ function listen() {
     renderAcceptedRows();
   }, (error) => {
     console.error("Unable to load accepted GRNs.", error);
-    document.getElementById("acceptedGrnTableBody").innerHTML = `<tr><td class="empty-row" colspan="11">Accepted GRNs could not be loaded.</td></tr>`;
+    document.getElementById("acceptedGrnTableBody").innerHTML = `<tr><td class="empty-row" colspan="12">Accepted GRNs could not be loaded.</td></tr>`;
   });
 }
 
