@@ -11,13 +11,14 @@
     <link rel="stylesheet" href="css/packaging.css" />
     <link rel="stylesheet" href="css/packaging-workflow.css" />
     <script src="js/packaging-configurations.js" defer></script>
+    <link rel="stylesheet" href="css/navigation.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand-wrap">
         <button class="mobile-menu-toggle" id="mobileMenuToggle" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
-        <div class="brand-logo">CC</div>
-        <div class="brand-text"><span class="label">Company</span><span class="title">Cognizant Chemical Private Limited</span></div>
+        <div class="brand-logo"><img src="logo.png" alt="Cognizant Chemical Private Limited logo" /></div>
+        <div class="brand-text"> <span class="title">Cognizant Chemical Private Limited</span></div>
       </div>
     </header>
     <aside class="sidebar" id="sidebar">
@@ -31,6 +32,7 @@
         <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
         <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
         <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-history.html"><i class="fa-solid fa-clock-rotate-left"></i><span>Packaging Stock History</span></a></li>
         <li><a class="nav-item active" href="packaging-configurations.html" aria-current="page"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
       </ul>
     </aside>
@@ -44,14 +46,14 @@
           <div class="register-header"><div><h2 id="configurationsHeading">Configuration List</h2><p>Demo recipes by customer and product</p></div><span class="config-count" id="configurationCount">1 configuration</span></div>
           <div class="table-scroll">
             <table class="stock-table configuration-table">
-              <thead><tr><th>Configuration</th><th>Customer</th><th>Product</th><th>Packaging Materials</th><th>Status</th><th>Action</th></tr></thead>
+              <thead><tr><th>Configuration</th><th>Customer</th><th>Product</th><th>Packing Basis</th><th>Packaging Materials</th><th>Status</th><th>Action</th></tr></thead>
               <tbody id="configurationRows"></tbody>
             </table>
           </div>
           <div class="empty-state" id="configurationEmpty" hidden><span class="empty-icon"><i class="fa-solid fa-list-check"></i></span><h3>No configurations yet.</h3><p>Create a demo packaging recipe to preview it here.</p></div>
           <div class="table-footer"><span id="configurationFooter">Demo configuration</span><span>Saved in page preview only</span></div>
         </section>
-        <p class="demo-note"><i class="fa-solid fa-circle-info"></i> Recipes on this page are temporary UI demo data and are not shared with other pages.</p>
+        <p class="demo-note"><i class="fa-solid fa-circle-info"></i> Customer packaging stock is separate from Product / Chemical Inventory. Recipes and calculations are frontend-only previews.</p>
       </div>
     </main>
     <div class="overlay" id="configurationOverlay"></div>
@@ -64,23 +66,33 @@
             <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-clipboard-list"></i></span><div><h2>Configuration details</h2><p>Link this packaging recipe to a customer and product</p></div></div>
             <div class="config-fields">
               <label class="field" id="configurationNameField"><span>Configuration Name <b aria-hidden="true">*</b></span><input id="configurationName" type="text" placeholder="e.g. 2.5L Bottle Packing" /><span class="field-error" id="configurationNameError"></span></label>
-              <label class="field" id="configurationCustomerField"><span>Customer <b aria-hidden="true">*</b></span><select id="configurationCustomer"><option value="">Select customer</option><option>ABC Chemicals</option><option>XYZ Industries</option><option>Customer Demo</option></select><span class="field-error" id="configurationCustomerError"></span></label>
-              <label class="field" id="configurationProductField"><span>Product <b aria-hidden="true">*</b></span><select id="configurationProduct"><option value="">Select product</option><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select><span class="field-error" id="configurationProductError"></span></label>
+              <label class="field" id="configurationCustomerField"><span>Customer <b aria-hidden="true">*</b></span><select id="configurationCustomer"><option value="">Select customer</option><option>E Sayyed Chemicals</option><option>ABC Chemicals</option><option>XYZ Industries</option></select><span class="field-error" id="configurationCustomerError"></span></label>
+              <label class="field" id="configurationProductField"><span>Product <b aria-hidden="true">*</b></span><select id="configurationProduct"><option value="">Select product</option><option>Acetone</option><option>IPA</option><option>Ethyl Acetate</option></select><span class="field-error" id="configurationProductError"></span></label>
+              <label class="field" id="packingBasisField"><span>Packing Basis <b aria-hidden="true">*</b></span><input id="packingBasis" type="text" placeholder="e.g. 10 Litre / Box" /><span class="field-error" id="packingBasisError"></span></label>
+              <label class="field" id="chemicalQuantityPerBoxField"><span>Chemical Quantity per Box <b aria-hidden="true">*</b></span><div class="config-measure-input"><input id="chemicalQuantityPerBox" type="number" min="0.01" step="any" placeholder="10" /><select id="chemicalUnit" aria-label="Chemical unit"><option>Liter</option><option>KG</option></select></div><span class="field-error" id="chemicalQuantityPerBoxError"></span></label>
+              <label class="field" id="bottleCapacityField"><span>Bottle Capacity <b aria-hidden="true">*</b></span><div class="config-measure-input"><input id="bottleCapacity" type="number" min="0.01" step="any" placeholder="2.5" /><select id="bottleUnit" aria-label="Bottle capacity unit"><option>Liter</option><option>KG</option></select></div><span class="field-error" id="bottleCapacityError"></span></label>
+              <label class="field" id="bottlesPerBoxField"><span>Bottles per Box <b aria-hidden="true">*</b></span><input id="bottlesPerBox" type="number" min="1" step="1" placeholder="4" /><span class="field-error" id="bottlesPerBoxError"></span></label>
+              <label class="field" id="configurationStatusField"><span>Status</span><select id="configurationStatus"><option>Active</option><option>Inactive</option></select></label>
             </div>
           </div>
           <div class="config-form-section">
-            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><h2>Packaging requirements</h2><p>Materials needed to pack one box or unit</p></div></div>
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><h2>Packaging Materials Required</h2><p>Materials needed to pack one box or unit</p></div></div>
             <div class="workflow-table-wrap">
               <table class="workflow-table">
-                <thead><tr><th>Packaging Material <b aria-hidden="true">*</b></th><th>Qty Per Box <b aria-hidden="true">*</b></th><th>Unit <b aria-hidden="true">*</b></th><th><span class="sr-only">Remove</span></th></tr></thead>
+                <thead><tr><th>Packaging Material <b aria-hidden="true">*</b></th><th>Quantity per Box <b aria-hidden="true">*</b></th><th>Unit <b aria-hidden="true">*</b></th><th><span class="sr-only">Remove</span></th></tr></thead>
                 <tbody id="configurationMaterials"></tbody>
               </table>
             </div>
             <div class="config-empty-row" id="configurationMaterialsEmpty" hidden>Add at least one packaging material.</div>
             <span class="field-error config-materials-error" id="configurationMaterialsError"></span>
             <button class="button config-add-row" id="addConfigurationMaterial" type="button"><i class="fa-solid fa-plus"></i> Add Material</button>
-            <datalist id="configurationMaterialOptions"><option value="Empty Box"></option><option value="2.5 Litre Bottle"></option><option value="Thermocol"></option><option value="Box Plate"></option></datalist>
           </div>
+          <section class="config-form-section calculation-preview" aria-labelledby="calculationPreviewTitle">
+            <div class="form-section-heading"><span class="section-icon"><i class="fa-solid fa-calculator"></i></span><div><h2 id="calculationPreviewTitle">Packaging Calculation Preview</h2><p>Frontend-only estimate; no stock is checked or changed</p></div></div>
+            <div class="calculation-input-row"><label class="field" for="calculationQuantity"><span>Chemical Quantity</span><input id="calculationQuantity" type="number" min="0" step="any" value="100" /></label><label class="field" for="calculationUnit"><span>Unit</span><select id="calculationUnit"><option>Liter</option><option>KG</option></select></label></div>
+            <div class="calculation-flow" id="calculationFlow"></div>
+            <div class="workflow-table-wrap"><table class="workflow-table calculation-table"><thead><tr><th>Packaging Material</th><th>Per Box</th><th>Required</th></tr></thead><tbody id="calculationRows"></tbody></table></div>
+          </section>
           <div class="workflow-form-actions"><button class="button" type="button" id="cancelConfiguration">Cancel</button><button class="button button-primary" type="submit"><i class="fa-solid fa-check"></i> Save Configuration</button></div>
         </form>
       </div>

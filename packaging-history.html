@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Packaging Stock History - CCPL IMS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link rel="stylesheet" href="css/packaging.css" />
+    <link rel="stylesheet" href="css/packaging-history.css" />
+    <script type="module" src="js/packaging-history.js"></script>
+    <link rel="stylesheet" href="css/navigation.css" />
+  </head>
+  <body class="history-page">
+    <header class="topbar">
+      <div class="brand-wrap">
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo"><img src="logo.png" alt="Cognizant Chemical Private Limited logo" /></div>
+        <div class="brand-text"> <span class="title">Cognizant Chemical Private Limited</span></div>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <ul class="nav-list">
+        <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
+        <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
+        <li><a class="nav-item" href="dashboard.html"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a></li>
+        <li><a class="nav-item" href="inward.html"><i class="fa-solid fa-truck-ramp-box"></i><span>Inward</span></a></li>
+        <li><a class="nav-item" href="kanta.html"><i class="fa-solid fa-warehouse"></i><span>Kanta</span></a></li>
+        <li><a class="nav-item" href="grn-finalize.html"><i class="fa-solid fa-file-circle-check"></i><span>GRN Finalize</span></a></li>
+        <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
+        <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
+        <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item active" href="packaging-history.html" aria-current="page"><i class="fa-solid fa-clock-rotate-left"></i><span>Packaging Stock History</span></a></li>
+        <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
+      </ul>
+    </aside>
+    <main class="main-panel">
+      <div class="main-content">
+        <div class="page-header">
+          <div>
+            <span class="eyebrow"><i class="fa-solid fa-clock-rotate-left"></i> Packaging</span>
+            <h1>Packaging Stock History</h1>
+            <p class="page-subtitle">Complete history of packaging material receipts and consumption.</p>
+          </div>
+          <span class="header-badge"><i class="fa-solid fa-circle-info"></i> Packaging movement history</span>
+        </div>
+
+        <section class="stats-grid history-stats" aria-label="Packaging transaction summary">
+          <article class="stat-card"><div class="stat-top"><span class="stat-label">Total Transactions</span><span class="mini-icon"><i class="fa-solid fa-list-check"></i></span></div><p class="stat-value" id="totalTransactions">0</p><span class="stat-note">Loaded from Firestore</span></article>
+          <article class="stat-card stat-green"><div class="stat-top"><span class="stat-label">Total Received</span><span class="mini-icon"><i class="fa-solid fa-arrow-down-to-line"></i></span></div><p class="stat-value stat-unit-totals" id="totalReceived">—</p><span class="stat-note">Grouped by unit</span></article>
+          <article class="stat-card stat-amber"><div class="stat-top"><span class="stat-label">Total Consumed</span><span class="mini-icon"><i class="fa-solid fa-arrow-up-from-bracket"></i></span></div><p class="stat-value stat-unit-totals" id="totalConsumed">—</p><span class="stat-note">Grouped by unit</span></article>
+          <article class="stat-card stat-teal"><div class="stat-top"><span class="stat-label">Customers</span><span class="mini-icon"><i class="fa-solid fa-building-user"></i></span></div><p class="stat-value" id="customerCount">0</p><span class="stat-note">With recorded movements</span></article>
+        </section>
+
+        <section class="register-card history-register" aria-labelledby="historyHeading">
+          <div class="register-header history-header">
+            <div><h2 id="historyHeading">Transaction History</h2><p id="historyDescription">Customer packaging movements, separate from Product / Chemical Inventory</p></div>
+            <span class="history-count" id="historySummaryCount" aria-live="polite">0 transactions</span>
+          </div>
+          <div class="history-filters" role="search" aria-label="Filter packaging transactions">
+            <label class="history-search"><span>Search</span><span class="history-input-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input id="historySearch" type="search" placeholder="Customer, material, reference..." autocomplete="off" /></span></label>
+            <label class="filter-field"><span>Customer</span><select id="customerFilter"><option value="">All customers</option></select></label>
+            <label class="filter-field"><span>Packaging Material</span><select id="materialFilter"><option value="">All materials</option></select></label>
+            <label class="filter-field"><span>Transaction Type</span><select id="typeFilter"><option value="">All</option><option value="IN">IN</option><option value="OUT">OUT</option></select></label>
+            <label class="filter-field"><span>From Date</span><input id="dateFromFilter" type="date" /></label>
+            <label class="filter-field"><span>To Date</span><input id="dateToFilter" type="date" /></label>
+            <button class="button history-reset" id="resetFilters" type="button"><i class="fa-solid fa-rotate-left"></i> Reset Filters</button>
+          </div>
+          <div class="table-scroll history-table-scroll" id="tableWrap">
+            <table class="stock-table history-table">
+              <thead><tr><th>Date &amp; Time</th><th>Customer</th><th>Material</th><th>Type</th><th>Quantity</th><th>Unit</th><th>Reference</th><th>User</th><th>Action</th></tr></thead>
+              <tbody id="historyRows"></tbody>
+            </table>
+          </div>
+          <div class="empty-state history-empty" id="emptyState" hidden><span class="empty-icon"><i class="fa-solid fa-box-open"></i></span><h3>No packaging transactions found.</h3><p>Reset filters or check again after a receipt is saved.</p></div>
+          <div class="history-table-footer"><span id="resultCountFooter">0 transactions</span><span>Live Firestore packaging movements</span></div>
+        </section>
+      </div>
+    </main>
+
+    <div class="overlay" id="drawerOverlay"></div>
+    <aside class="stock-drawer history-drawer" id="transactionDrawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" aria-hidden="true" tabindex="-1">
+      <div class="drawer-header"><div><span class="drawer-kicker">Packaging stock history</span><h2 id="drawerTitle">Transaction Details</h2></div><button class="icon-button" id="closeDrawerIcon" type="button" aria-label="Close transaction details"><i class="fa-solid fa-xmark"></i></button></div>
+      <div class="drawer-content" id="drawerContent"></div>
+      <div class="drawer-footer"><button class="button" id="closeDrawer" type="button">Close</button></div>
+    </aside>
+  </body>
+</html>

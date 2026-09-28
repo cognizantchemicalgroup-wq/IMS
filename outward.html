@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <link rel="stylesheet" href="css/packaging-workflow.css" />
-    <script src="js/outward-packaging.js" defer></script>
+    <script type="module" src="js/outward-packaging.js"></script>
     <style>
       :root {
         --sidebar-bg: #0f172a;
@@ -72,14 +72,15 @@
       }
       @media (max-width: 560px) { .brand-text .title { white-space: normal; max-width: 200px; font-size: .9rem; } .brand-logo { width: 40px; height: 40px; } }
     </style>
+    <link rel="stylesheet" href="css/navigation.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand-wrap">
         <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Open navigation menu" aria-expanded="false"><i class="fa-solid fa-bars"></i></button>
-        <div class="brand-logo">CC</div>
+        <div class="brand-logo"><img src="logo.png" alt="Cognizant Chemical Private Limited logo" /></div>
         <div class="brand-text">
-          <span class="label">Company</span>
+           
           <span class="title">Cognizant Chemical Private Limited</span>
         </div>
       </div>
@@ -96,6 +97,7 @@
         <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
         <li><a class="nav-item active" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
         <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-history.html"><i class="fa-solid fa-clock-rotate-left"></i><span>Packaging Stock History</span></a></li>
         <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
       </ul>
     </aside>
@@ -106,72 +108,54 @@
           <div>
             <span class="eyebrow"><i class="fa-solid fa-arrow-up-from-bracket"></i> Outward</span>
             <h1>Outward</h1>
-            <p class="page-subtitle">Dispatch product with a customer packaging preview</p>
+            <p class="page-subtitle">Dispatch inventory with fixed packaging quantities per box</p>
           </div>
           <div class="header-badge">Available in ERP navigation</div>
         </div>
 
-        <div class="card">
+        <form class="card outward-content" id="outwardForm" novalidate>
           <div class="card-header"><h2>Outward Dispatch</h2></div>
-          <div class="card-body outward-content">
-            <p class="outward-demo-notice"><i class="fa-solid fa-circle-info"></i> Demo preview only. Product and packaging quantities shown here are not saved or deducted.</p>
-            <form id="outwardForm" novalidate>
-              <div class="outward-workspace">
-                <section class="outward-panel" aria-labelledby="productInventoryHeading">
-                  <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><span class="product-inventory-label">Product Inventory</span><h3 id="productInventoryHeading">Product stock</h3><p>Product stock is shown separately from packaging stock.</p></div></div>
-                  <div class="outward-panel-body">
-                    <label class="field" for="outwardProduct"><span>Product</span><select id="outwardProduct"><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select></label>
-                    <label class="field" for="outwardProductQuantity" style="margin-top: 13px"><span>Product Quantity</span><input id="outwardProductQuantity" type="number" min="1" value="2" /><small>Quantity to dispatch, in product units</small></label>
-                    <div class="inventory-demo-card" style="margin-top: 15px"><span class="inventory-demo-title"><i class="fa-solid fa-cubes-stacked"></i> Demo product stock</span><strong class="inventory-demo-product" id="demoProductName">Acetone 2.5L</strong><span class="inventory-demo-quantity">1,250 Litres available</span></div>
-                  </div>
-                </section>
+          <div class="card-body">
+            <div class="outward-field-grid outward-primary-fields">
+              <label class="field" for="outwardFrom"><span>From</span><select id="outwardFrom" required><option value="">Select source</option><option>CCPL</option><option>Breeze</option><option>Valorol</option></select></label>
+              <label class="field" for="outwardCustomer"><span>To Customer</span><select id="outwardCustomer" required><option value="">Loading customers...</option></select></label>
+              <label class="field" for="outwardProduct"><span>Product</span><select id="outwardProduct" required><option value="">Loading products...</option></select></label>
+              <label class="field" for="outwardLocation"><span>Location</span><select id="outwardLocation" required><option value="">Select location</option><option>Warehouse A</option><option>Warehouse B</option><option>Plant Store</option></select></label>
+              <label class="field" for="outwardQuantity"><span>Quantity</span><input id="outwardQuantity" type="number" min="0.001" step="any" required placeholder="0" /></label>
+              <label class="field" for="numberOfBoxes"><span>Number of Boxes</span><input id="numberOfBoxes" type="number" min="1" step="1" required placeholder="0" /></label>
+              <label class="field" for="againstPoNumber"><span>Against PO Number</span><input id="againstPoNumber" type="text" maxlength="120" /></label>
+            </div>
 
-                <section class="outward-panel" aria-labelledby="packagingDetailsHeading">
-                  <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-box-open"></i></span><div><span class="packaging-stock-label">Packaging Stock</span><h3 id="packagingDetailsHeading">Packaging Details</h3><p>Preview material needs from the selected recipe</p></div></div>
-                  <div class="outward-panel-body">
-                    <div class="outward-field-grid">
-                      <label class="field" for="packagingCustomer"><span>Customer</span><select id="packagingCustomer"><option>ABC Chemicals</option><option>XYZ Industries</option><option>Customer Demo</option></select></label>
-                      <label class="field" for="packagingProduct"><span>Product</span><select id="packagingProduct"><option>Acetone 2.5L</option><option>Acetone 5L</option><option>IPA 2.5L</option></select></label>
-                      <label class="field" for="packagingConfiguration"><span>Packaging Configuration</span><select id="packagingConfiguration"><option value="">Select configuration</option></select></label>
-                      <label class="field" id="numberOfBoxesField" for="numberOfBoxes"><span>Number of Boxes</span><input id="numberOfBoxes" type="number" min="1" step="1" value="2" /><span class="field-error" id="numberOfBoxesError"></span></label>
-                    </div>
-                    <div class="packaging-results" id="packagingResults" hidden>
-                      <div class="packaging-result-title"><h4>Required Packaging Quantities</h4><span class="demo-chip"><i class="fa-solid fa-wand-magic-sparkles"></i> Demo calculation</span></div>
-                      <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Packaging Material</th><th>Per Box</th><th>Required</th><th>Unit</th></tr></thead><tbody id="requiredMaterials"></tbody></table></div>
-                      <div class="packaging-results" style="margin-top: 13px; padding-top: 13px">
-                        <div class="packaging-result-title"><h4>Current Packaging Stock</h4><span class="demo-chip"><i class="fa-solid fa-eye"></i> Preview only</span></div>
-                        <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Material</th><th>Available</th><th>Required</th><th>Balance</th><th>Status</th></tr></thead><tbody id="packagingStockPreview"></tbody></table></div>
-                        <div class="stock-warning" id="stockWarning" role="status" aria-live="polite"></div>
-                      </div>
-                    </div>
-                    <p class="packaging-no-config" id="packagingNoConfig" hidden>Select a matching customer, product, and packaging configuration to preview requirements.</p>
-                  </div>
-                </section>
-              </div>
-
-              <section class="consumption-summary" id="consumptionSummary" aria-labelledby="consumptionSummaryHeading" hidden>
-                <div class="consumption-summary-header"><h3 id="consumptionSummaryHeading">Packaging Consumption Summary</h3><span class="demo-chip">Preview only</span></div>
-                <div class="consumption-summary-body">
-                  <div class="summary-context">
-                    <div class="summary-context-item"><span>Customer</span><strong id="summaryCustomer"></strong></div>
-                    <div class="summary-context-item"><span>Product</span><strong id="summaryProduct"></strong></div>
-                    <div class="summary-context-item"><span>Configuration</span><strong id="summaryConfiguration"></strong></div>
-                    <div class="summary-context-item"><span>Boxes</span><strong id="summaryBoxes"></strong></div>
-                  </div>
-                  <p class="summary-material-count" id="summaryMaterialCount"></p>
-                  <div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Material</th><th>Per Box</th><th>Total Required</th><th>Unit</th></tr></thead><tbody id="summaryMaterials"></tbody></table></div>
-                </div>
+            <div class="outward-workspace outward-live-workspace">
+              <section class="outward-panel" aria-labelledby="productInventoryHeading">
+                <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-boxes-stacked"></i></span><div><span class="product-inventory-label">Product Inventory</span><h3 id="productInventoryHeading">Available stock</h3><p>Live stock for the selected product and location.</p></div></div>
+                <div class="outward-panel-body"><strong class="inventory-demo-product" id="selectedProductName">Select product and location</strong><span class="inventory-demo-quantity" id="availableProductStock" role="status" aria-live="polite">—</span><div class="stock-warning" id="productStockWarning" role="status" aria-live="polite"></div></div>
               </section>
-
-              <section class="outward-finalize" aria-labelledby="outwardFinalizeHeading">
-                <div><h3 id="outwardFinalizeHeading">Outward Finalization</h3><p id="outwardFinalizeHint">Finalization is a UI preview and does not update inventory.</p></div>
-                <button class="button button-primary" id="finalizeOutward" type="submit" disabled><i class="fa-solid fa-truck-fast"></i> Finalize Outward</button>
+              <section class="outward-panel" aria-labelledby="customerPackagingHeading">
+                <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-box-open"></i></span><div><span class="packaging-stock-label">Packaging Stock</span><h3 id="customerPackagingHeading">Selected customer stock</h3><p id="customerPackagingCaption">Select a customer to view packaging availability.</p></div></div>
+                <div class="outward-panel-body"><div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Material</th><th>Available</th><th>Unit</th></tr></thead><tbody id="customerPackagingRows"></tbody></table></div><p class="packaging-no-config" id="customerPackagingEmpty" hidden>No packaging stock is recorded for this customer.</p></div>
               </section>
-              <div class="outward-toast" id="outwardToast" role="status" aria-live="polite"></div>
-            </form>
+            </div>
+
+            <section class="consumption-summary" id="consumptionSummary" aria-labelledby="consumptionSummaryHeading" hidden>
+              <div class="consumption-summary-header"><h3 id="consumptionSummaryHeading">Packaging Required and Available</h3><span class="stock-availability" id="packagingStockStatus" role="status" aria-live="polite"></span></div>
+              <div class="consumption-summary-body"><div class="outward-table-wrap"><table class="outward-table"><thead><tr><th>Packaging Material</th><th>Per Box</th><th>Available</th><th>Required</th><th>Remaining</th><th>Unit</th></tr></thead><tbody id="packagingStockPreview"></tbody></table></div><div class="stock-warning" id="stockWarning" role="status" aria-live="polite"></div></div>
+            </section>
+
+            <section class="outward-finalize" aria-labelledby="outwardFinalizeHeading">
+              <div><h3 id="outwardFinalizeHeading">Final Dispatch</h3><p id="outwardFinalizeHint">Select dispatch details and confirm available product and packaging stock.</p></div>
+              <button class="button button-primary" id="finalizeOutward" type="submit" disabled><i class="fa-solid fa-truck-fast"></i> Final Dispatch</button>
+            </section>
+            <div class="outward-toast" id="outwardToast" role="status" aria-live="polite"></div>
           </div>
-        </div>
+        </form>
+
+        <section class="outward-panel outward-entries" aria-labelledby="outwardEntriesHeading">
+          <div class="outward-panel-header"><span class="section-icon"><i class="fa-solid fa-list-check"></i></span><div><span class="product-inventory-label">Dispatch Register</span><h2 id="outwardEntriesHeading">Outward Entries</h2></div></div>
+          <div class="outward-panel-body"><div class="outward-table-wrap" id="outwardEntriesWrap" hidden><table class="outward-table"><thead><tr><th>Date &amp; Time</th><th>Product</th><th>Qty</th><th>From</th><th>To</th><th>Number of Boxes</th><th>Status</th><th>Action</th></tr></thead><tbody id="outwardEntriesBody"></tbody></table></div><p class="packaging-no-config" id="outwardEntriesEmpty">Loading outward entries...</p></div>
+        </section>
       </div>
     </main>
+    <dialog class="outward-view-dialog" id="outwardViewDialog" aria-labelledby="outwardViewTitle"><div class="outward-view-header"><h2 id="outwardViewTitle">Outward Entry</h2><button class="icon-button" id="closeOutwardView" type="button" aria-label="Close outward details"><i class="fa-solid fa-xmark"></i></button></div><div class="outward-view-content" id="outwardViewContent"></div><div class="outward-view-footer"><button class="button" id="closeOutwardViewButton" type="button">Close</button></div></dialog>
   </body>
 </html>

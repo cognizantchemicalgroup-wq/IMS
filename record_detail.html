@@ -161,19 +161,21 @@
         .page-header { flex-direction: column; align-items: flex-start; }
       }
     </style>
+    <link rel="stylesheet" href="css/navigation.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand-wrap">
-        <div class="brand-logo">CC</div>
+        <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar"><i class="fa-solid fa-bars"></i></button>
+        <div class="brand-logo"><img src="logo.png" alt="Cognizant Chemical Private Limited logo" /></div>
         <div class="brand-text">
-          <span class="label">Company</span>
+           
           <span class="title">Cognizant Chemical Private Limited</span>
         </div>
       </div>
     </header>
 
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <ul class="nav-list">
         <li><a class="nav-item" href="index.html"><i class="fa-solid fa-house"></i><span>Home</span></a></li>
         <li><a class="nav-item" href="po.html"><i class="fa-solid fa-file-invoice-dollar"></i><span>PO</span></a></li>
@@ -184,6 +186,7 @@
         <li><a class="nav-item" href="inventory.html"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></a></li>
         <li><a class="nav-item" href="outward.html"><i class="fa-solid fa-arrow-up-from-bracket"></i><span>Outward</span></a></li>
         <li><a class="nav-item" href="packaging-stock.html"><i class="fa-solid fa-box-open"></i><span>Packaging Stock</span></a></li>
+        <li><a class="nav-item" href="packaging-history.html"><i class="fa-solid fa-clock-rotate-left"></i><span>Packaging Stock History</span></a></li>
         <li><a class="nav-item" href="packaging-configurations.html"><i class="fa-solid fa-list-check"></i><span>Packaging Configurations</span></a></li>
       </ul>
     </aside>
@@ -236,5 +239,25 @@
         </div>
       </div>
     </main>
+    <script>
+      const mobileMenuToggle = document.getElementById("mobileMenuToggle");
+      const sidebar = document.getElementById("sidebar");
+
+      function closeNavigation() {
+        sidebar.classList.remove("open");
+        mobileMenuToggle.setAttribute("aria-expanded", "false");
+        mobileMenuToggle.setAttribute("aria-label", "Open navigation menu");
+      }
+
+      mobileMenuToggle.addEventListener("click", () => {
+        const isOpen = sidebar.classList.toggle("open");
+        mobileMenuToggle.setAttribute("aria-expanded", String(isOpen));
+        mobileMenuToggle.setAttribute("aria-label", isOpen ? "Close navigation menu" : "Open navigation menu");
+      });
+      sidebar.querySelectorAll(".nav-item").forEach((link) => link.addEventListener("click", closeNavigation));
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeNavigation();
+      });
+    </script>
   </body>
 </html>
