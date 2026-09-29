@@ -42,12 +42,8 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /vendors/{id} {
-      allow read: if active();
-      allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
-      allow delete: if isAdmin();
-    }
-    match /customers/{id} {
+    // Vendors and customers share one list.
+    match /parties/{id} {
       allow read: if active();
       allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
       allow delete: if isAdmin();

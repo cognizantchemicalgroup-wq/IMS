@@ -93,4 +93,5 @@ async function start() {
     exportExcel(m.map((r) => ({ Item: r.item.name, Category: r.item.category, Unit: r.item.unit, ...Object.fromEntries(whs.map((w) => [w.name, r.per[w.code] || 0])), Total: r.total })), `CCPL_Stock_${isoDate()}.xlsx`, "Stock");
   });
   await load();
+  document.body.dataset.loaded = "1";
 }

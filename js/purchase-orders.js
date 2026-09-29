@@ -64,7 +64,7 @@ async function start() {
   async function load() {
     [pos, vendors, items] = await Promise.all([
       listCollection("purchaseOrders", "createdAt", "desc"),
-      listCollection("vendors"),
+      listCollection("parties"),
       listCollection("items")
     ]);
     render();
@@ -94,7 +94,7 @@ async function start() {
 
   /* ---------------- Editor ---------------- */
   function openEditor(existing = null, { duplicate = false } = {}) {
-    if (!vendors.filter((v) => v.active !== false).length) { toast("Add a vendor first (Purchase → Vendors).", "error"); return; }
+    if (!vendors.filter((v) => v.active !== false).length) { toast("Add the vendor first (Purchase → Vendors & Customers).", "error"); return; }
     if (!items.filter((i) => i.active !== false).length) { toast("Add items first (Inventory → Items & Packaging).", "error"); return; }
     const po = existing || {};
     const editing = existing && !duplicate;
@@ -293,6 +293,7 @@ async function start() {
   }
 
   await load();
+  document.body.dataset.loaded = "1";
   const openId = new URLSearchParams(location.search).get("open");
   if (openId) openDetail(pos.find((p) => p.id === openId));
 }

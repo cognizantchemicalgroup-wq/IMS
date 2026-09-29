@@ -74,7 +74,7 @@ page.on("pageerror", (e) => consoleErrors.push(e.message));
 
 /* ---------- helpers ---------- */
 const modal = () => page.locator(".modal-backdrop").last();
-async function goto(file) { await page.goto(`${BASE}/${file}`); await page.waitForSelector(".page-head", { timeout: 20000 }); }
+async function goto(file) { await page.goto(`${BASE}/${file}`); await page.waitForSelector('body[data-loaded="1"]', { timeout: 20000 }); }
 async function login(email, password) {
   await page.goto(`${BASE}/index.html?emulator=1`);
   await page.fill("input[name=email]", email);
@@ -193,22 +193,22 @@ try {
   await page.screenshot({ path: path.join(OUT, "01-dashboard-empty.png") });
 
   /* ================= 2. Masters ================= */
-  console.log("\n2. Masters (vendors, customers, items)");
-  await addMaster("vendors.html", { name: "Pyramid Technoplast Limited", gstin: "27AACCP5074E3ZF", address1: "GAT NO. 420/1, 420/2, 420/3, KHANIVALI", address2: "Khanivali", city: "Palghar", pincode: "401204", paymentTermsDays: 30 });
-  const vendor = await one("vendors", "name", "Pyramid Technoplast Limited");
+  console.log("\n2. Masters (vendors & customers in one list, items)");
+  await addMaster("parties.html", { name: "Pyramid Technoplast Limited", gstin: "27AACCP5074E3ZF", address1: "GAT NO. 420/1, 420/2, 420/3, KHANIVALI", address2: "Khanivali", city: "Palghar", pincode: "401204", paymentTermsDays: 30 });
+  const vendor = await one("parties", "name", "Pyramid Technoplast Limited");
   check(vendor?.stateCode === "27" && vendor?.pan === "AACCP5074E" && vendor?.state === "Maharashtra", "vendor GSTIN auto-fills state code, state and PAN");
-  await addMaster("vendors.html", { name: "Gujarat Acids Pvt Ltd", gstin: "24AABCG1234H1Z5", city: "Vapi", paymentTermsDays: 45 });
-  await addMaster("customers.html", { name: "Deepak Fertilisers Ltd", gstin: "27AAACD1234E1ZX", city: "Taloja" });
+  await addMaster("parties.html", { name: "Gujarat Acids Pvt Ltd", gstin: "24AABCG1234H1Z5", city: "Vapi", paymentTermsDays: 45 });
+  await addMaster("parties.html", { name: "Deepak Fertilisers Ltd", gstin: "27AAACD1234E1ZX", city: "Taloja" });
   await addMaster("items.html", { name: "Apple", hsn: "08081000", gstRate: 18 }, { category: "Raw Material", unit: "NOS" });
   await addMaster("items.html", { name: "Hydrochloric Acid 33%", hsn: "28061000", gstRate: 18 }, { category: "Finished Goods", unit: "KG" });
   // Duplicate protection
-  await goto("vendors.html"); await page.click("#addBtn");
+  await goto("parties.html"); await page.click("#addBtn");
   await modal().locator("[name=name]").fill("Another name"); await modal().locator("[name=gstin]").fill("27AACCP5074E3ZF");
   await modal().locator("#saveMaster").click();
   check((await expectToast("error")).includes("already exists"), "duplicate vendor GSTIN is blocked");
   await closeAllModals();
   // Excel template + import
-  await goto("vendors.html");
+  await goto("parties.html");
   const [tpl] = await Promise.all([page.waitForEvent("download"), page.click("#templateBtn")]);
   await tpl.saveAs(path.join(OUT, tpl.suggestedFilename()));
   const XLSX = (await import(path.join(NM, "xlsx", "xlsx.mjs"))).default ?? await import(path.join(NM, "xlsx", "xlsx.mjs"));
@@ -228,7 +228,27 @@ try {
   check((await modal().textContent()).includes("2 of 3 rows are valid"), "Excel import preview flags the invalid GSTIN row");
   await modal().locator("#confirmImport").click();
   await expectToast();
-  check(Boolean(await one("vendors", "name", "Bulk Vendor Two")) && !(await one("vendors", "name", "Broken Vendor")), "valid Excel rows imported, invalid row skipped");
+  check(Boolean(await one("parties", "name", "Bulk Vendor Two")) && !(await one("parties", "name", "Broken Vendor")), "valid Excel rows imported, invalid row skipped");
+  // Zoho Books export (same headers as the real Vendors export): duplicates by GSTIN merge, Inactive carried over
+  const zoho = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(zoho, XLSX.utils.json_to_sheet([
+    { "Contact ID": "Z1", "Display Name": "SAMPLE  CHEM PVT LTD", "Company Name": "SAMPLE CHEM PVT LTD", "EmailID": "", "MobilePhone": "", "Status": "Active", "Payment Terms": "60", "GST Identification Number (GSTIN)": "27AACCS1234C1ZV", "Billing Address": "GALA NO 9, UNIQUE INDL ESTATE", "Billing Street2": "OPP. TALKIES\r\nMULUND WEST", "Billing City": "MUMBAI", "Billing State": "Maharashtra", "Billing Code": "400080" },
+    { "Contact ID": "Z2", "Display Name": "Sample Chem-Pvt.Ltd.", "EmailID": "accounts@sample.test", "MobilePhone": "9800011111", "Status": "Active", "Payment Terms": "", "GST Identification Number (GSTIN)": "27AACCS1234C1ZV" },
+    { "Contact ID": "Z3", "Display Name": "Old Supplier", "Status": "Inactive", "Payment Terms": "30", "GST Identification Number (GSTIN)": "" },
+    { "Contact ID": "Z4", "Display Name": "Typo Traders", "Status": "Active", "GST Identification Number (GSTIN)": "27ALPPJ2647C222" }
+  ]), "Vendors");
+  const zohoFile = path.join(OUT, "zoho-vendors.xlsx");
+  XLSX.writeFile(zoho, zohoFile);
+  const [chooser2] = await Promise.all([page.waitForEvent("filechooser"), page.click("#importBtn")]);
+  await chooser2.setFiles(zohoFile);
+  await modal().locator("#confirmImport").waitFor();
+  const zPreview = await modal().textContent();
+  check(zPreview.includes("Zoho Books export detected") && zPreview.includes("2 of 3 rows are valid") && zPreview.includes("1 duplicate row was merged"), "Zoho export recognised: duplicate GSTIN merged, bad GSTIN flagged");
+  await modal().locator("#confirmImport").click();
+  await expectToast();
+  const sample = await one("parties", "gstin", "27AACCS1234C1ZV");
+  check(sample?.name === "SAMPLE CHEM PVT LTD" && sample.email === "accounts@sample.test" && sample.phone === "9800011111" && sample.paymentTermsDays === 60 && sample.address2 === "OPP. TALKIES, MULUND WEST", "merged party keeps the most complete details from both rows");
+  check((await one("parties", "name", "Old Supplier"))?.active === false, "Inactive status from Zoho carried over");
 
   /* ================= 3. Numbering ================= */
   console.log("\n3. PO numbering continues from 823");
@@ -304,6 +324,7 @@ try {
   check(po.totals.taxes.length === 1 && po.totals.taxes[0].kind === "IGST" && near(po.totals.taxes[0].amount, 21600), "Gujarat vendor → IGST 18% = 21,600");
   await receiveFully(acidPo.poNo, null, [["GJ-9001", 10000, 9980]]);
   check(await stockOf("PG-106", "Hydrochloric Acid 33%") === 9980, "tanker kanta 9,980 KG added to PG-106");
+  check((await one("purchaseOrders", "poNo", acidPo.poNo)).status === "COMPLETED", "9,980 of 10,000 KG is within 0.5% tolerance → tanker PO COMPLETED");
 
   /* ================= 7. Transfer PG-106 → Taloja with transit loss ================= */
   console.log("\n7. Stock transfer PG → Taloja");
@@ -461,6 +482,7 @@ try {
   await m.locator("input[name=password]").fill("Store#123456");
   await m.locator("#createU").click();
   await expectToast();
+  await page.waitForFunction(() => document.querySelector("#users")?.textContent.includes("store@test.ccpl"), null, { timeout: 10000 }).catch(() => {});
   check((await page.textContent("#users")).includes("store@test.ccpl"), "admin created a new user from Settings");
   await logout();
   await login("store@test.ccpl", "Store#123456");

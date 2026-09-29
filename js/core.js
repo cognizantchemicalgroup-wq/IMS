@@ -40,14 +40,14 @@ export const DEFAULT_COMPANY = {
     "Subject to Raigad jurisdiction."
   ].join("\n"),
   soTerms: "Subject to Raigad jurisdiction.",
-  poTolerancePct: 0
+  poTolerancePct: 0.5
 };
 
 export const DEFAULT_WAREHOUSES = [
   { code: "PG-106", name: "PG 106", docCode: "PG", addressLines: ["PLOT NO. E-106, NEAR CHAWANE VILLAGE,", "MIDC, ADDITIONAL PATALGANGA INDUSTRIAL AREA", "PATALGANGA,", "RAIGAD Maharashtra 410220 India"], destination: "PATALGANGA", active: true },
   { code: "PG-153", name: "PG-153", docCode: "PG", addressLines: ["PLOT NO. E-153, NEAR CHAWANE VILLAGE,", "MIDC, ADDITIONAL PATALGANGA INDUSTRIAL AREA", "PATALGANGA,", "RAIGAD Maharashtra 410220 India"], destination: "PATALGANGA", active: true },
-  { code: "BREEZE", name: "Breeze", docCode: "BR", addressLines: ["(Address to be updated in Settings)"], destination: "", active: true },
-  { code: "TALOJA", name: "Taloja Unit", docCode: "TL", addressLines: ["(Address to be updated in Settings)"], destination: "TALOJA", active: true }
+  { code: "BREEZE", name: "Breeze", docCode: "BR", addressLines: [], destination: "", active: true },
+  { code: "TALOJA", name: "Taloja Unit", docCode: "TL", addressLines: [], destination: "TALOJA", active: true }
 ];
 
 export const ITEM_CATEGORIES = ["Raw Material", "Finished Goods", "Packaging", "Trading", "Consumable"];
@@ -455,13 +455,12 @@ const NAV = [
   { group: "Purchase", items: [
     ["po", "purchase-orders.html", "fa-file-invoice", "Purchase Orders"],
     ["inward", "inward.html", "fa-truck-ramp-box", "Inward · Kanta · GRN"],
-    ["vendors", "vendors.html", "fa-building", "Vendors"]
+    ["parties", "parties.html", "fa-address-book", "Vendors & Customers"]
   ] },
   { group: "Sales", items: [
     ["quotations", "quotations.html", "fa-file-signature", "Quotations"],
     ["so", "sales-orders.html", "fa-file-contract", "Sales Orders"],
-    ["outward", "outward.html", "fa-truck-fast", "Outward / Dispatch"],
-    ["customers", "customers.html", "fa-handshake", "Customers"]
+    ["outward", "outward.html", "fa-truck-fast", "Outward / Dispatch"]
   ] },
   { group: "Inventory", items: [
     ["inventory", "inventory.html", "fa-boxes-stacked", "Stock"],

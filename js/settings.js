@@ -228,4 +228,5 @@ async function start() {
     toast("Numbering updated.", "ok");
   });
   await Promise.all([loadUsers(), renderNums()]);
+  document.body.dataset.loaded = "1";
 }

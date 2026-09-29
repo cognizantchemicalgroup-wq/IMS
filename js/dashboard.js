@@ -57,4 +57,5 @@ async function start() {
         ${openSos.length ? `<p class="small muted">Open SOs: ${openSos.slice(0, 5).map((s) => `${esc(s.soNo)} ${badge(s.status)}`).join(" ")}</p>` : ""}
       </div></div>
     </div>`;
+  document.body.dataset.loaded = "1";
 }

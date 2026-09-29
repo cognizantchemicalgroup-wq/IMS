@@ -50,4 +50,5 @@ async function start() {
     exportExcel(list.map((r) => ({ "Date & Time": fmtDateTime(r.at), User: r.userName, Email: r.email, Module: r.module, Action: r.action, Reference: r.refNo, Details: r.summary })), `CCPL_Activity_${$("#from").value}_to_${$("#to").value}.xlsx`, "Activity");
   });
   await load();
+  document.body.dataset.loaded = "1";
 }

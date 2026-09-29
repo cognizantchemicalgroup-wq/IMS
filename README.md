@@ -11,7 +11,7 @@ No build step: every page is a plain `.html` file with one script in `js/`.
 | Dashboard | `dashboard.html` | `js/dashboard.js` |
 | Purchase Orders — create, PDF, track received vs ordered, short-close | `purchase-orders.html` | `js/purchase-orders.js` |
 | Inward → Kanta → GRN (invoice qty, weighbridge qty, shortage, accepted into stock) | `inward.html` | `js/inward.js` |
-| Vendors / Customers / Items & Packaging (+ Excel template, import, export) | `vendors.html`, `customers.html`, `items.html` | `js/masters.js` |
+| Vendors & Customers (one shared list) and Items & Packaging — Excel template, import (also accepts Zoho Books exports), export | `parties.html`, `items.html` | `js/masters.js` |
 | Quotations → Sales Orders | `quotations.html`, `sales-orders.html` | `js/sales-docs.js` |
 | Outward / Dispatch (deducts product **and** drums/carboys/bottles) + Delivery Challan PDF | `outward.html` | `js/outward.js` |
 | Stock by warehouse + item ledger | `inventory.html` | `js/inventory.js` |
@@ -38,8 +38,9 @@ Example: PO for 10 apples.
 | Invoice 2 | 5 | 4 | **1** | 4 | 9 / 10 | PARTIALLY RECEIVED |
 | Manager clicks **Mark complete (short close)** with a reason | | | | | 9 / 10 | SHORT CLOSED |
 
-If both invoices had arrived in full, the PO would become **COMPLETED** automatically. For tankers you can set a
-tolerance % in Settings (e.g. 0.5 % → a 20 MT PO completes at 19.9 MT).
+If both invoices had arrived in full, the PO would become **COMPLETED** automatically. A PO also completes
+automatically when it is within the **0.5 % tolerance** (e.g. a 10,000 KG tanker PO completes at 9,950 KG or more);
+change the % in Settings.
 
 ## First-time setup (live Firebase project `ccpl-ims`)
 
@@ -64,6 +65,12 @@ tolerance % in Settings (e.g. 0.5 % → a 20 MT PO completes at 19.9 MT).
 
 After that, add or deactivate users from **Settings → Users** (admin only).
 
+### Importing your existing vendors/customers from Zoho Books
+Vendors & Customers → **Import Excel** → choose the Zoho *Vendors* or *Contacts* export as-is. The preview shows
+what will be added; the same company entered twice in Zoho (same GSTIN) is merged into one record, Inactive
+contacts stay inactive, and rows with an invalid GSTIN are listed so you can fix them in Excel and import again.
+Importing the same file twice updates instead of duplicating.
+
 ## How to check everything works
 
 ### Automatic test (recommended — runs the full business flow on a throw-away local database)
@@ -73,8 +80,8 @@ npm install
 npx playwright install chromium
 npm test
 ```
-It runs 47 checks: login security, vendor Excel import, PO numbering and GST, the 10-apples partial/short scenario,
-short close, auto-complete, IGST, transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO →
+It runs 51 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
+short close, auto-complete, 0.5 % tanker tolerance, IGST, transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO →
 dispatch with drum deduction, stock ledger, activity log, and that operators/outsiders are blocked by the rules.
 PDFs and screenshots are written to `tests/output/`.
 

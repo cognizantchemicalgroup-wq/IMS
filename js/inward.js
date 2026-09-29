@@ -78,7 +78,7 @@ async function start() {
     [receipts, pos, vendors, items] = await Promise.all([
       listCollection("receipts", "createdAt", "desc"),
       listCollection("purchaseOrders", "createdAt", "desc"),
-      listCollection("vendors"),
+      listCollection("parties"),
       listCollection("items")
     ]);
     render();
@@ -443,4 +443,5 @@ async function start() {
   }
 
   await load();
+  document.body.dataset.loaded = "1";
 }

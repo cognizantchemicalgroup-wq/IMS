@@ -50,7 +50,7 @@ async function start() {
   async function load() {
     [outwards, sos, customers, items, stock] = await Promise.all([
       listCollection("outwards", "createdAt", "desc"), listCollection("salesOrders", "createdAt", "desc"),
-      listCollection("customers"), listCollection("items"), listCollection("inventory")
+      listCollection("parties"), listCollection("items"), listCollection("inventory")
     ]);
     render();
   }
@@ -310,4 +310,5 @@ async function start() {
   }
 
   await load();
+  document.body.dataset.loaded = "1";
 }

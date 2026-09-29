@@ -58,7 +58,7 @@ export async function startSalesPage(kind) {
   }
 
   async function load() {
-    [docs, customers, items] = await Promise.all([listCollection(cfg.col, "createdAt", "desc"), listCollection("customers"), listCollection("items")]);
+    [docs, customers, items] = await Promise.all([listCollection(cfg.col, "createdAt", "desc"), listCollection("parties"), listCollection("items")]);
     render();
   }
 
@@ -77,7 +77,7 @@ export async function startSalesPage(kind) {
 
   /* ---------------- Editor ---------------- */
   function openEditor(existing = null, { fromQuotation = null } = {}) {
-    if (!customers.filter((c) => c.active !== false).length) { toast("Add a customer first (Sales → Customers).", "error"); return; }
+    if (!customers.filter((c) => c.active !== false).length) { toast("Add the customer first (Purchase → Vendors & Customers).", "error"); return; }
     const d = existing || fromQuotation || {};
     const editing = Boolean(existing);
     const soFromQ = !isQ && fromQuotation;
@@ -251,6 +251,7 @@ export async function startSalesPage(kind) {
   }
 
   await load();
+  document.body.dataset.loaded = "1";
   // Arriving from "Convert to Sales Order"
   if (!isQ) {
     const qid = sessionStorage.getItem("ccpl-convert-quotation");

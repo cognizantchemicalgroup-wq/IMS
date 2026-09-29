@@ -42,8 +42,7 @@ const ITEM_FIELDS = [
 ];
 
 export const MASTER_CONFIG = {
-  vendors: { title: "Vendors", singular: "Vendor", eyebrow: "Purchase", nav: "vendors", fields: PARTY_FIELDS, collection: "vendors" },
-  customers: { title: "Customers", singular: "Customer", eyebrow: "Sales", nav: "customers", fields: PARTY_FIELDS, collection: "customers" },
+  parties: { title: "Vendors & Customers", singular: "Party", eyebrow: "Masters", nav: "parties", fields: PARTY_FIELDS, collection: "parties" },
   items: { title: "Items & Packaging", singular: "Item", eyebrow: "Inventory", nav: "items", fields: ITEM_FIELDS, collection: "items" }
 };
 
@@ -53,6 +52,7 @@ function normalizeRecord(fields, raw) {
     let v = raw[f.key] ?? raw[f.label] ?? "";
     v = String(v).trim();
     if (f.upper) v = v.toUpperCase();
+    if (f.key === "name") v = v.replace(/\s+/g, " ");
     if (f.type === "number") v = v === "" ? null : Number(v);
     rec[f.key] = v;
   });
@@ -73,6 +73,28 @@ function validateRecord(fields, rec) {
   if ("category" in rec && rec.category && !ITEM_CATEGORIES.includes(rec.category)) errors.push(`Category must be one of: ${ITEM_CATEGORIES.join(", ")}`);
   fields.filter((f) => f.type === "number").forEach((f) => { if (rec[f.key] !== null && !Number.isFinite(rec[f.key])) errors.push(`${f.label} must be a number`); });
   return errors;
+}
+
+/** Map one row of a Zoho Books Vendors/Contacts export onto our party fields. */
+function fromZoho(row) {
+  const g = (k) => String(row[k] ?? "").replace(/\s*[\r\n]+\s*/g, ", ").replace(/\s{2,}/g, " ").trim();
+  const place = g("Place of Contact(With State Code)");
+  return {
+    mapped: {
+      name: g("Display Name") || g("Company Name") || g("Contact Name"),
+      gstin: g("GST Identification Number (GSTIN)"),
+      contactPerson: [g("First Name"), g("Last Name")].filter(Boolean).join(" ") || g("Billing Attention"),
+      phone: g("MobilePhone") || g("Phone") || g("Billing Phone"),
+      email: g("EmailID"),
+      address1: g("Billing Address"), address2: g("Billing Street2"), city: g("Billing City"), pincode: g("Billing Code"),
+      state: g("Billing State"), stateCode: /^\d{2}-/.test(place) ? place.slice(0, 2) : "", country: g("Billing Country"),
+      paymentTermsDays: g("Payment Terms"),
+      bankName: g("Vendor Bank Name"), bankAccount: g("Vendor Bank Account Number"), bankIfsc: g("Vendor Bank Code"),
+      notes: g("Notes")
+    },
+    active: g("Status").toLowerCase() !== "inactive",
+    zohoId: g("Contact ID")
+  };
 }
 
 const keyOf = (rec) => (rec.gstin ? `gst:${rec.gstin}` : `name:${rec.name.toLowerCase().replace(/\s+/g, " ")}`);
@@ -200,27 +222,47 @@ export async function startMasterPage(type) {
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const raw = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       const labelToKey = Object.fromEntries(cfg.fields.flatMap((f) => [[f.label.toLowerCase(), f.key], [`${f.label} *`.toLowerCase(), f.key], [f.key.toLowerCase(), f.key]]));
-      const byKey = new Map(records.map((r) => [keyOf(r), r]));
-      const seen = new Set();
-      const rows = raw.map((row, index) => {
-        const mapped = {};
-        Object.entries(row).forEach(([k, v]) => { const key = labelToKey[String(k).trim().toLowerCase()]; if (key) mapped[key] = v; });
+      const zoho = type !== "items" && raw.length > 0 && ("Display Name" in raw[0] || "Contact ID" in raw[0]);
+      const parsed = raw.map((row, index) => {
+        let mapped = {};
+        let active = true;
+        let zohoId = "";
+        if (zoho) {
+          ({ mapped, active, zohoId } = fromZoho(row));
+        } else {
+          Object.entries(row).forEach(([k, v]) => { const key = labelToKey[String(k).trim().toLowerCase()]; if (key) mapped[key] = v; });
+        }
         const rec = normalizeRecord(cfg.fields, mapped);
-        const errors = validateRecord(cfg.fields, rec);
-        const k = rec.name ? keyOf(rec) : "";
-        if (k && seen.has(k)) errors.push("Duplicate row in file");
-        seen.add(k);
-        const existing = byKey.get(k);
-        return { line: index + 2, rec, errors, existing };
+        return { line: index + 2, rec, active, zohoId, errors: validateRecord(cfg.fields, rec), merged: [] };
       }).filter((r) => Object.values(r.rec).some((v) => v !== "" && v !== null && v !== "India"));
+
+      // The same party entered twice (same GSTIN, or same name without GSTIN) becomes one record,
+      // keeping the most complete row and filling its blanks from the others.
+      const filled = (rec) => Object.values(rec).filter((v) => v !== "" && v !== null).length;
+      const groups = new Map();
+      const rows = [];
+      parsed.forEach((p) => {
+        const k = p.errors.length || !p.rec.name ? `line:${p.line}` : keyOf(p.rec);
+        const prev = groups.get(k);
+        if (!prev) { groups.set(k, p); rows.push(p); return; }
+        const [base, other] = filled(p.rec) > filled(prev.rec) ? [p.rec, prev.rec] : [prev.rec, p.rec];
+        Object.keys(base).forEach((f) => { if ((base[f] === "" || base[f] === null) && other[f] !== "" && other[f] !== null) base[f] = other[f]; });
+        prev.rec = base;
+        prev.active = prev.active || p.active;
+        prev.zohoId ||= p.zohoId;
+        prev.merged.push(p.line);
+      });
       if (!rows.length) { toast("No rows found in the file.", "error"); return; }
+      const byKey = new Map(records.map((r) => [keyOf(r), r]));
+      rows.forEach((r) => { r.existing = (r.zohoId && records.find((x) => x.zohoId === r.zohoId)) || byKey.get(keyOf(r.rec)); });
       const valid = rows.filter((r) => !r.errors.length);
+      const mergedCount = rows.reduce((n, r) => n + r.merged.length, 0);
       const modal = openModal({
         title: `Import ${cfg.title} — preview`,
         size: "wide",
-        body: `<div class="notice ${rows.length === valid.length ? "ok" : "warn"}" style="margin-bottom:12px">${valid.length} of ${rows.length} rows are valid (${valid.filter((r) => !r.existing).length} new, ${valid.filter((r) => r.existing).length} updates). ${rows.length - valid.length ? "Rows with errors will be skipped." : ""}</div>
-          <div class="table-wrap" style="max-height:50vh"><table class="table"><thead><tr><th>Row</th><th>Name</th><th>${type === "items" ? "Category" : "GSTIN"}</th><th>Action</th><th>Problems</th></tr></thead><tbody>
-          ${rows.map((r) => `<tr><td>${r.line}</td><td>${esc(r.rec.name)}</td><td>${esc(type === "items" ? r.rec.category : r.rec.gstin)}</td><td>${r.errors.length ? badge("REJECTED") : r.existing ? '<span class="badge blue">UPDATE</span>' : '<span class="badge green">NEW</span>'}</td><td class="small" style="color:var(--danger)">${esc(r.errors.join("; "))}</td></tr>`).join("")}
+        body: `<div class="notice ${rows.length === valid.length ? "ok" : "warn"}" style="margin-bottom:12px">${zoho ? "Zoho Books export detected. " : ""}${valid.length} of ${rows.length} rows are valid (${valid.filter((r) => !r.existing).length} new, ${valid.filter((r) => r.existing).length} updates).${mergedCount ? ` ${mergedCount} duplicate row${mergedCount === 1 ? " was" : "s were"} merged (same GSTIN).` : ""} ${rows.length - valid.length ? "Rows with errors will be skipped — fix them in Excel and import again." : ""}</div>
+          <div class="table-wrap" style="max-height:50vh"><table class="table"><thead><tr><th>Row</th><th>Name</th><th>${type === "items" ? "Category" : "GSTIN"}</th><th>Action</th><th>Notes</th></tr></thead><tbody>
+          ${rows.map((r) => `<tr><td>${r.line}</td><td>${esc(r.rec.name)}</td><td>${esc(type === "items" ? r.rec.category : r.rec.gstin)}</td><td>${r.errors.length ? badge("REJECTED") : r.existing ? '<span class="badge blue">UPDATE</span>' : '<span class="badge green">NEW</span>'}</td><td class="small">${r.errors.length ? `<span style="color:var(--danger)">${esc(r.errors.join("; "))}</span>` : ""}${r.merged.length ? `<span class="muted">Merged with row ${r.merged.join(", ")}</span>` : ""}${r.active ? "" : ' <span class="badge gray">Inactive</span>'}</td></tr>`).join("")}
           </tbody></table></div>`,
         footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="confirmImport" ${valid.length ? "" : "disabled"}>Import ${valid.length} rows</button>`
       });
@@ -229,9 +271,9 @@ export async function startMasterPage(type) {
         try {
           for (let i = 0; i < valid.length; i += 400) {
             const batch = writeBatch(db);
-            valid.slice(i, i + 400).forEach(({ rec, existing }) => {
+            valid.slice(i, i + 400).forEach(({ rec, existing, active, zohoId }) => {
               const ref = existing ? doc(db, cfg.collection, existing.id) : doc(collection(db, cfg.collection));
-              batch.set(ref, { ...rec, ...(existing ? {} : { active: true, createdAt: serverTimestamp() }), updatedAt: serverTimestamp() }, { merge: true });
+              batch.set(ref, { ...rec, active, ...(zohoId ? { zohoId } : {}), ...(existing ? {} : { createdAt: serverTimestamp() }), updatedAt: serverTimestamp() }, { merge: true });
             });
             if (i === 0) logActivity(batch, { module: cfg.title, action: "IMPORT", refNo: file.name, summary: `Imported ${valid.length} ${cfg.title.toLowerCase()} from ${file.name}` });
             await batch.commit();
@@ -256,4 +298,5 @@ export async function startMasterPage(type) {
     exportExcel(records.map((r) => Object.fromEntries([...cfg.fields.map((f) => [f.label, r[f.key] ?? ""]), ["Status", r.active === false ? "Inactive" : "Active"]])), `CCPL_${type}.xlsx`, cfg.title);
   });
   await load();
+  document.body.dataset.loaded = "1";
 }

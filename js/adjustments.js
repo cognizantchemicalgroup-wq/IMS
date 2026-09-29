@@ -125,4 +125,5 @@ async function start() {
   }
 
   await load();
+  document.body.dataset.loaded = "1";
 }
