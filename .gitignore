@@ -1,0 +1,8 @@
+node_modules
+admin/users.json
+service-account*.json
+*-firebase-adminsdk-*.json
+test-results/
+tests/output/
+*.log
+.firebase/

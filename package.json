@@ -1,0 +1,20 @@
+{
+  "name": "ccpl-erp",
+  "private": true,
+  "type": "module",
+  "description": "Cognizant Chemical Pvt. Ltd. ERP (static site on Firebase)",
+  "scripts": {
+    "serve": "npx http-server -p 5500 -c-1 .",
+    "setup": "node admin/setup.mjs",
+    "test": "firebase emulators:exec --project demo-ccpl \"node tests/e2e.mjs\"",
+    "deploy": "firebase deploy --only firestore:rules,storage,hosting"
+  },
+  "devDependencies": {
+    "firebase": "10.12.2",
+    "firebase-admin": "^12.7.0",
+    "firebase-tools": "^13.35.1",
+    "pdfmake": "0.2.10",
+    "playwright": "^1.56.0",
+    "xlsx": "0.18.5"
+  }
+}
