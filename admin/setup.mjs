@@ -52,7 +52,7 @@ if (!(await company.get()).exists) {
     name: "Cognizant Chemical Pvt. Ltd.",
     addressLines: ["Office No. 120 DISMA Complex,", "Plot No 246, Kalamboli Panvel,", "Raigad Maharashtra 410218 India"],
     state: "Maharashtra", stateCode: "27", gstin: "27AAGCC5829E1ZN", pan: "AAGCC5829E",
-    email: "admin@cognizantchemical.com", phone: "9619662255", poTolerancePct: 0.5
+    email: "admin@cognizantchemical.com", phone: "9619662255", poTolerancePct: 0
   });
   console.log("seeded   company details");
 }
@@ -60,8 +60,8 @@ if (!(await company.get()).exists) {
 const warehouses = [
   { code: "PG-106", name: "PG 106", docCode: "PG", sort: 1, destination: "PATALGANGA", addressLines: ["PLOT NO. E-106, NEAR CHAWANE VILLAGE,", "MIDC, ADDITIONAL PATALGANGA INDUSTRIAL AREA", "PATALGANGA,", "RAIGAD Maharashtra 410220 India"] },
   { code: "PG-153", name: "PG-153", docCode: "PG", sort: 2, destination: "PATALGANGA", addressLines: ["PLOT NO. E-153, NEAR CHAWANE VILLAGE,", "MIDC, ADDITIONAL PATALGANGA INDUSTRIAL AREA", "PATALGANGA,", "RAIGAD Maharashtra 410220 India"] },
-  { code: "BREEZE", name: "Breeze", docCode: "BR", sort: 3, destination: "", addressLines: [] },
-  { code: "TALOJA", name: "Taloja Unit", docCode: "TL", sort: 4, destination: "TALOJA", addressLines: [] }
+  { code: "BREEZE", name: "Breeze", docCode: "BR", sort: 3, destination: "", addressLines: ["(Address to be updated in Settings)"] },
+  { code: "TALOJA", name: "Taloja Unit", docCode: "TL", sort: 4, destination: "TALOJA", addressLines: ["(Address to be updated in Settings)"] }
 ];
 for (const w of warehouses) {
   const ref = db.doc(`warehouses/${w.code}`);
