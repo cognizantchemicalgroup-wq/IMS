@@ -1,8 +1,0 @@
-[
-  { "name": "Rupesh Mudliar", "email": "rupesh.mudliar@cognizantchemical.com", "role": "admin", "password": "Rupesh@CCPL2026" },
-  { "name": "CCPL Admin", "email": "cognizantchemicalpvtltd@gmail.com", "role": "admin", "password": "CCPL@2026" },
-  { "name": "Commercial", "email": "commercial@cognizantchemical.com", "role": "manager", "password": "Commercial@CCPL2026" },
-  { "name": "Bhavna", "email": "bhavna@cognizantchemical.com", "role": "manager", "password": "Bhavna@CCPL2026" },
-  { "name": "Aarjavi Mudliar", "email": "aarjavi.mudliar@gmail.com", "role": "manager", "password": "Aarjavi@CCPL2026" },
-  { "name": "Deepak", "email": "deepak@cognizantchemical.com", "role": "operator", "password": "Deepak@CCPL2026" }
-]
