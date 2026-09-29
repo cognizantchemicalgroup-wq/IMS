@@ -50,16 +50,15 @@ change the % in Settings.
 3. Firebase console → *Project settings → Service accounts → Generate new private key*. Save it in this folder as
    `service-account.json` (it is git-ignored — never commit it).
 4. Copy `admin/users.example.json` to `admin/users.json` and put the passwords in (git-ignored).
-5. Create the logins, company details, 4 warehouses and packaging items:
+5. Lock the database and create the logins, company details, 4 warehouses and packaging items — one command:
    ```bash
-   GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run setup
+   GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run golive
    ```
-6. Publish the security rules (and hosting, if you use Firebase Hosting):
-   ```bash
-   npx firebase login
-   npm run deploy
-   ```
-   **Important:** until the new rules are deployed, the old wide-open rules stay live.
+   (`npm run deploy:rules` alone publishes only the security rules.) Afterwards you can delete the key in the
+   Firebase console (*Service accounts → Manage keys*) — it is only needed again for these scripts.
+6. The site itself is hosted on **Vercel** from this GitHub repo: every pull request gets a preview link (posted on
+   the PR by the Vercel bot) and merging into `main` updates the live site. `vercel.json` / `.vercelignore` keep the
+   admin scripts and tests off the public site.
 7. Sign in → Settings: set the next PO number (e.g. 824 to continue after CCPL/PG/823/26-27), fill Breeze and Taloja
    addresses and bank details.
 

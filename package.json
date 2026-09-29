@@ -7,7 +7,9 @@
     "serve": "npx http-server -p 5500 -c-1 .",
     "setup": "node admin/setup.mjs",
     "test": "firebase emulators:exec --project demo-ccpl \"node tests/e2e.mjs\"",
-    "deploy": "firebase deploy --only firestore:rules,storage,hosting"
+    "deploy": "firebase deploy --only firestore:rules,storage,hosting",
+    "deploy:rules": "node admin/deploy-rules.mjs",
+    "golive": "node admin/deploy-rules.mjs && node admin/setup.mjs"
   },
   "devDependencies": {
     "firebase": "10.12.2",
