@@ -16,6 +16,9 @@ service cloud.firestore {
     function isManager() { return hasRole(['admin', 'manager']); }
     function isOperator() { return hasRole(['admin', 'manager', 'operator']); }
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    // The only account that may read login sessions (private access audit).
+    function isSuperAdmin() { return active() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com'; }
+    function poOpenStatuses() { return ['OPEN', 'PARTIALLY RECEIVED', 'AWAITING KANTA', 'PARTIALLY INWARDED', 'COMPLETED']; }
 
     match /users/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;
@@ -41,6 +44,20 @@ service cloud.firestore {
       allow create, update: if isOperator() && request.resource.data.next is int && request.resource.data.next >= 1;
       allow delete: if false;
     }
+    // Registry of every document number ever issued: a number can be created once and never changed or removed,
+    // so duplicates are impossible even if a counter is set back by mistake.
+    match /docNumbers/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.number is string;
+      allow update, delete: if false;
+    }
+    // Login sessions: each user writes only their own; only the super admin can read them.
+    match /sessions/{id} {
+      allow read: if isSuperAdmin();
+      allow create: if active() && request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() && resource.data.uid == request.auth.uid && onlyChanges(['lastActiveAt', 'logoutAt', 'endReason']);
+      allow delete: if false;
+    }
 
     // Vendors and customers share one list.
     match /parties/{id} {
@@ -60,8 +77,8 @@ service cloud.firestore {
       allow create: if isManager() && request.resource.data.status == 'OPEN';
       allow update: if isManager()
         || (isOperator() && onlyChanges(['lines', 'status', 'updatedAt'])
-            && request.resource.data.status in ['OPEN', 'PARTIALLY RECEIVED', 'COMPLETED']
-            && resource.data.status in ['OPEN', 'PARTIALLY RECEIVED', 'COMPLETED']);
+            && request.resource.data.status in poOpenStatuses()
+            && resource.data.status in poOpenStatuses());
       allow delete: if isAdmin();
     }
     match /quotations/{id} {
@@ -80,7 +97,7 @@ service cloud.firestore {
 
     match /receipts/{id} {
       allow read: if active();
-      allow create: if isOperator() && request.resource.data.stage == 'KANTA PENDING';
+      allow create: if isOperator() && request.resource.data.stage == 'GRN PENDING';
       allow update: if isOperator() && (request.resource.data.stage != 'CANCELLED' || isAdmin());
       allow delete: if false;
     }

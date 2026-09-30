@@ -1,6 +1,6 @@
 import {
   db, reportError, auth, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, busy, formValues, isAdmin,
-  listCollection, logActivity, fmtDateTime, financialYear, NUMBER_FORMATS, badge
+  listCollection, logActivity, fmtDateTime, financialYear, NUMBER_FORMATS, NUMBER_PAD, NUMBER_LABELS, formatNumber, badge
 } from "./core.js";
 import { USING_EMULATOR } from "./firebase-config.js";
 import { doc, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -50,6 +50,7 @@ async function start() {
         <label class="field"><span>IFSC</span><input name="bankIfsc" value="${esc(c.bankIfsc)}" /></label>
         <label class="field"><span>Branch</span><input name="bankBranch" value="${esc(c.bankBranch)}" /></label>
         <label class="field"><span>PO auto-complete tolerance %</span><input type="number" step="any" min="0" max="10" name="poTolerancePct" value="${esc(c.poTolerancePct ?? 0)}" /><small class="help">e.g. 0.5 → a 20 MT PO auto-completes at 19.9 MT</small></label>
+        <label class="field"><span>Flag PO as "pending too long" after (days)</span><input type="number" step="1" min="1" name="poOverdueDays" value="${esc(c.poOverdueDays ?? 15)}" /><small class="help">Shown under Exceptions</small></label>
         <label class="field span-all"><span>Default PO terms & conditions</span><textarea name="poTerms" rows="6">${esc(c.poTerms)}</textarea></label>
         <label class="field span-2"><span>Default quotation terms</span><textarea name="quoteTerms" rows="5">${esc(c.quoteTerms)}</textarea></label>
         <label class="field span-2"><span>Default sales order terms</span><textarea name="soTerms" rows="5">${esc(c.soTerms)}</textarea></label>
@@ -58,8 +59,8 @@ async function start() {
     <div class="card"><div class="card-head"><h3>Warehouses / units</h3><button class="btn sm" id="addWh"><i class="fa-solid fa-plus"></i> Add warehouse</button></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>Code</th><th>Name</th><th>PO code</th><th>Address (Deliver To)</th><th>Destination</th><th>Status</th><th></th></tr></thead><tbody id="whRows"></tbody></table></div></div>
     <div class="card"><div class="card-head"><h3>Document numbering · FY ${financialYear()}</h3></div><div class="card-body">
-      <p class="small muted" style="margin-top:0">Set the next number to continue your existing series (e.g. your last PO was CCPL/PG/823/26-27 → set PO next number to 824). {SITE} is the warehouse PO code, {SEQ} the running number, {FY} the financial year.</p>
-      <table class="table"><thead><tr><th>Document</th><th>Format</th><th class="num">Next number</th><th></th></tr></thead><tbody id="numRows"></tbody></table></div></div>` : `
+      <p class="small muted" style="margin-top:0">Set the format and the next number. <b>{FY}</b> = financial year (26-27), <b>{SEQ}</b> = running number, <b>{SITE}</b> = warehouse code (PO only). Example: <span class="mono">CCPL/PO/{FY}/{SEQ}</span> with 3 digits → <span class="mono">CCPL/PO/26-27/001</span>. The system issues numbers automatically and never issues the same number twice — if the next number is already used, it skips to the next free one.</p>
+      <table class="table"><thead><tr><th>Document</th><th style="min-width:220px">Format</th><th class="num" style="width:90px">Digits</th><th class="num" style="width:120px">Next number</th><th>Next will be</th><th></th></tr></thead><tbody id="numRows"></tbody></table></div></div>` : `
     <div class="card"><div class="card-head"><h3>Company</h3></div><div class="card-body"><div class="detail-grid"><div><span>Name</span><b>${esc(c.name)}</b></div><div><span>GSTIN</span><b>${esc(c.gstin)}</b></div><div><span>PAN</span><b>${esc(c.pan)}</b></div></div></div></div>`}`;
 
   page.querySelector("#pwForm").addEventListener("submit", async (e) => {
@@ -156,7 +157,7 @@ async function start() {
   page.querySelector("#coForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const v = formValues(e.target);
-    const data = { ...v, addressLines: v.addressLines.split("\n").map((s) => s.trim()).filter(Boolean), poTolerancePct: Number(v.poTolerancePct) || 0, updatedAt: serverTimestamp() };
+    const data = { ...v, addressLines: v.addressLines.split("\n").map((s) => s.trim()).filter(Boolean), poTolerancePct: Number(v.poTolerancePct) || 0, poOverdueDays: Number(v.poOverdueDays) || 15, updatedAt: serverTimestamp() };
     const done = busy(e.submitter);
     try {
       const batch = writeBatch(db);
@@ -209,23 +210,42 @@ async function start() {
   const fy = financialYear();
   const renderNums = async () => {
     const counters = await listCollection("counters");
-    const labels = { PO: "Purchase Order", QT: "Quotation", SO: "Sales Order", GE: "Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Stock Adjustment" };
     page.querySelector("#numRows").innerHTML = Object.keys(NUMBER_FORMATS).map((k) => {
       const next = counters.find((x) => x.id === `${k}_${fy}`)?.next || 1;
-      return `<tr><td class="strong">${labels[k]}</td><td class="mono">${esc(NUMBER_FORMATS[k])}</td><td><input type="number" min="1" step="1" value="${next}" data-num="${k}" class="num" style="max-width:120px;margin-left:auto;display:block" /></td><td><button class="btn sm" data-setnum="${k}">Set</button></td></tr>`;
+      const format = state.company.numberFormats?.[k] || NUMBER_FORMATS[k];
+      const pad = state.company.numberPads?.[k] || NUMBER_PAD[k];
+      return `<tr data-k="${k}"><td class="strong">${esc(NUMBER_LABELS[k])}</td><td><input class="mono" data-fmt value="${esc(format)}" /></td><td><input type="number" min="1" max="8" step="1" data-pad value="${pad}" class="num" /></td>
+        <td><input type="number" min="1" step="1" value="${next}" data-num class="num" /></td><td class="mono small" data-preview>${esc(formatNumber(k, next, { fy, site: "PG" }))}</td><td><button class="btn sm" data-setnum="${k}">Save</button></td></tr>`;
     }).join("");
   };
+  const previewRow = (tr) => {
+    const fmt = tr.querySelector("[data-fmt]").value.trim(); const pad = Number(tr.querySelector("[data-pad]").value) || 1; const next = Number(tr.querySelector("[data-num]").value) || 1;
+    tr.querySelector("[data-preview]").textContent = fmt.replace("{SEQ}", String(next).padStart(pad, "0")).replace("{FY}", fy).replace("{SITE}", "PG");
+  };
+  page.querySelector("#numRows").addEventListener("input", (e) => { const tr = e.target.closest("tr[data-k]"); if (tr) previewRow(tr); });
   page.querySelector("#numRows").addEventListener("click", async (e) => {
     const b = e.target.closest("[data-setnum]"); if (!b) return;
     const k = b.dataset.setnum;
-    const next = Number(page.querySelector(`[data-num="${k}"]`).value);
+    const tr = b.closest("tr");
+    const format = tr.querySelector("[data-fmt]").value.trim();
+    const pad = Number(tr.querySelector("[data-pad]").value);
+    const next = Number(tr.querySelector("[data-num]").value);
+    if (!format.includes("{SEQ}")) { toast("The format must contain {SEQ}.", "error"); return; }
+    if (!Number.isInteger(pad) || pad < 1 || pad > 8) { toast("Digits must be between 1 and 8.", "error"); return; }
     if (!Number.isInteger(next) || next < 1) { toast("Enter a whole number.", "error"); return; }
-    if (!(await confirmDialog(`Next ${k} number for FY ${fy} will be ${next}. Continue?`))) return;
-    await runTransaction(db, async (tx) => {
-      tx.set(doc(db, "counters", `${k}_${fy}`), { next, type: k, fy, updatedAt: serverTimestamp() }, { merge: true });
-      logActivity(tx, { module: "Settings", action: "NUMBERING", refNo: k, summary: `Set next ${k} number for FY ${fy} to ${next}` });
-    });
-    toast("Numbering updated.", "ok");
+    const preview = tr.querySelector("[data-preview]").textContent;
+    if (!(await confirmDialog(`${NUMBER_LABELS[k]}: next number for FY ${fy} will be ${preview}. Continue?`))) return;
+    try {
+      const numberFormats = { ...(state.company.numberFormats || {}), [k]: format };
+      const numberPads = { ...(state.company.numberPads || {}), [k]: pad };
+      await runTransaction(db, async (tx) => {
+        tx.set(doc(db, "counters", `${k}_${fy}`), { next, type: k, fy, updatedAt: serverTimestamp() }, { merge: true });
+        tx.set(doc(db, "settings", "company"), { numberFormats, numberPads, updatedAt: serverTimestamp() }, { merge: true });
+        logActivity(tx, { module: "Settings", action: "NUMBERING", refNo: k, summary: `${NUMBER_LABELS[k]} numbering: format ${format}, ${pad} digits, next ${preview}` });
+      });
+      Object.assign(state.company, { numberFormats, numberPads });
+      toast("Numbering saved.", "ok");
+    } catch (error) { toast(error.message, "error"); }
   });
   await Promise.all([loadUsers(), renderNums()]);
   document.body.dataset.loaded = "1";

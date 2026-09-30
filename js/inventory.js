@@ -1,8 +1,9 @@
 import {
-  db, initPage, pageHeader, esc, toast, openModal, listCollection, qty, fmtDateTime, isoDate,
-  activeWarehouses, warehouseByCode, exportExcel, ITEM_CATEGORIES
+  db, reportError, state, initPage, pageHeader, esc, toast, openModal, listCollection, qty, fmtDateTime, isoDate, round, busy, formValues, can,
+  activeWarehouses, warehouseByCode, warehouseOptions, exportExcel, ITEM_CATEGORIES, reserveNumber, commitNumber, readStock, applyMovements, logActivity
 } from "./core.js";
-import { collection, getDocs, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { collection, doc, getDocs, query, runTransaction, serverTimestamp, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { uploadFiles } from "./uploads.js";
 
 const page = await initPage("inventory");
 if (page) start();
@@ -11,7 +12,7 @@ async function start() {
   let stock = []; let items = [];
   const whs = activeWarehouses();
   page.innerHTML = `${pageHeader("Inventory", "Stock", "Live stock of materials and packaging in every warehouse.",
-    '<button class="btn" id="exportBtn"><i class="fa-solid fa-download"></i> Export</button>')}
+    `<button class="btn" id="exportBtn"><i class="fa-solid fa-download"></i> Export</button>${can("close") ? '<button class="btn primary" id="openingBtn"><i class="fa-solid fa-box-archive"></i> Add Existing / Opening Stock</button>' : ""}`)}
     <div class="grid cols-4" id="whCards" style="margin-bottom:16px"></div>
     <div class="card">
       <div class="card-head"><div class="toolbar"><input class="input search" id="search" placeholder="Search item…" />
@@ -92,6 +93,56 @@ async function start() {
     if (!m.length) { toast("Nothing to export."); return; }
     exportExcel(m.map((r) => ({ Item: r.item.name, Category: r.item.category, Unit: r.item.unit, ...Object.fromEntries(whs.map((w) => [w.name, r.per[w.code] || 0])), Total: r.total })), `CCPL_Stock_${isoDate()}.xlsx`, "Stock");
   });
+  page.querySelector("#openingBtn")?.addEventListener("click", openOpeningStock);
+
+  // Direct stock that did not come through a PO / GRN (old stock, bulk stock found, migration).
+  // Saved as its own entry type with reason, date and user; corrections are reversals, never silent edits.
+  function openOpeningStock() {
+    const modal = openModal({
+      title: "Add Existing / Opening Stock",
+      size: "wide",
+      body: `<div class="notice info" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div>Use this only for stock that did <b>not</b> come through a PO / GRN — e.g. stock already lying in the warehouse when the ERP started. It is recorded separately and appears under Exceptions → Stock manually adjusted. To correct it later, an admin reverses it from Write-off / Adjust (history is kept).</div></div>
+        <form id="osForm" class="form-grid" novalidate>
+          <label class="field"><span>Warehouse <b class="req">*</b></span><select name="warehouse">${warehouseOptions()}</select></label>
+          <label class="field span-2"><span>Item <b class="req">*</b></span><select name="itemId"><option value="">Select…</option>${items.filter((i) => i.active !== false).map((i) => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.unit)})</option>`).join("")}</select></label>
+          <label class="field"><span>Quantity <b class="req">*</b></span><input type="number" step="any" min="0" name="qty" /></label>
+          <label class="field"><span>Stock as on date</span><input type="date" name="date" value="${isoDate()}" /></label>
+          <label class="field span-3"><span>Reason / source <b class="req">*</b></span><input name="reason" placeholder="e.g. Opening stock physically counted on 01-10-2026" /></label>
+          <label class="field span-2"><span>Reference (count sheet no. etc.)</span><input name="reference" /></label>
+          <label class="field span-2"><span>Supporting document</span><input type="file" name="file" accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx" /></label>
+        </form>`,
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="saveOs"><i class="fa-solid fa-check"></i> Add to stock</button>'
+    });
+    const f = modal.el.querySelector("#osForm");
+    modal.el.querySelector("#saveOs").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const v = formValues(f);
+      const item = items.find((i) => i.id === v.itemId);
+      const q = Number(v.qty);
+      if (!v.warehouse || !item) { toast("Select the warehouse and item.", "error"); return; }
+      if (!Number.isFinite(q) || q <= 0) { toast("Enter a quantity greater than 0.", "error"); return; }
+      if (!v.reason) { toast("Enter the reason / source of this stock.", "error"); return; }
+      const done = busy(button);
+      try {
+        const ref = doc(collection(db, "adjustments"));
+        const docs = await uploadFiles(`adjustments/${ref.id}`, { attachment: f.file.files[0] });
+        const no = await runTransaction(db, async (tx) => {
+          const stockMap = await readStock(tx, [{ warehouse: v.warehouse, itemId: item.id }]);
+          const number = await reserveNumber(tx, "OS", { date: v.date || isoDate() });
+          commitNumber(tx, number, ref.id);
+          const it = { id: item.id, name: item.name, unit: item.unit, category: item.category };
+          applyMovements(tx, stockMap, [{ warehouse: v.warehouse, item: it, qty: q, note: `Opening / existing stock: ${v.reason}` }], { type: "OPENING STOCK", id: ref.id, no: number.number });
+          tx.set(ref, { adjNo: number.number, kind: "OPENING", date: v.date, warehouse: v.warehouse, type: "Opening / existing stock", item: it, qty: round(q), reason: v.reason, reference: v.reference, docs, status: "POSTED", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
+          logActivity(tx, { module: "Stock Adjustment", action: "OPENING STOCK", refId: ref.id, refNo: number.number, summary: `${number.number} opening / existing stock +${qty(q)} ${item.unit} ${item.name} at ${warehouseByCode(v.warehouse).name} (as on ${v.date}). ${v.reason}` });
+          return number.number;
+        });
+        toast(`${no} added to stock.`, "ok");
+        modal.close();
+        await load();
+      } catch (error) { reportError(error); } finally { done(); }
+    });
+  }
+
   await load();
   document.body.dataset.loaded = "1";
 }

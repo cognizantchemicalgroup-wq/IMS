@@ -92,7 +92,7 @@ async function start() {
         const adjNo = await runTransaction(db, async (tx) => {
           const stockMap = await readStock(tx, [{ warehouse: v.warehouse, itemId: item.id }]);
           const number = await reserveNumber(tx, "ADJ", { date: v.date });
-          commitNumber(tx, number);
+          commitNumber(tx, number, ref.id);
           const it = { id: item.id, name: item.name, unit: item.unit, category: item.category };
           applyMovements(tx, stockMap, [{ warehouse: v.warehouse, item: it, qty: sign * q, note: `${v.type}: ${v.reason}` }], { type: "ADJUSTMENT", id: ref.id, no: number.number });
           tx.set(ref, { adjNo: number.number, date: v.date, warehouse: v.warehouse, type: v.type, item: it, qty: round(sign * q), reason: v.reason, docs, status: "POSTED", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });

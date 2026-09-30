@@ -102,12 +102,15 @@ async function buildDoc(spec) {
   const rightBottom = [];
   if (spec.totals) rightBottom.push(totalsTable(spec.totals));
   rightBottom.push({
-    stack: [
-      { text: `For ${company.name}`, bold: true, color: C.ink, alignment: "center", margin: [0, 14, 0, 0] },
-      { text: " ", margin: [0, 26, 0, 0] },
-      { canvas: [{ type: "line", x1: 30, y1: 0, x2: 200, y2: 0, lineWidth: 0.6, lineColor: C.line }], alignment: "center" },
-      { text: spec.signLabel || "Authorized Signature", alignment: "center", color: C.muted, margin: [0, 3, 0, 0] }
-    ]
+    table: { widths: ["*"], body: [[{
+      stack: [
+        { text: `For ${company.name}`, bold: true, color: C.ink, alignment: "center" },
+        { text: "System Generated Document — No Signature Required.", alignment: "center", color: C.brand, bold: true, fontSize: 8.5, margin: [0, 4, 0, 0] }
+      ],
+      fillColor: C.soft, margin: [6, 8, 6, 8]
+    }]] },
+    layout: "noBorders",
+    margin: [0, 14, 0, 0]
   });
 
   return {
@@ -119,7 +122,7 @@ async function buildDoc(spec) {
       margin: [34, 10, 34, 0],
       columns: [
         { text: `GSTIN ${company.gstin}`, fontSize: 7, color: C.muted, width: 150 },
-        { text: "This is a Computer Generated Document.", fontSize: 7, color: C.muted, alignment: "center", width: "*" },
+        { text: "System Generated Document — No Signature Required.", fontSize: 7, color: C.muted, alignment: "center", width: "*" },
         { text: `${spec.number} · Page ${current} of ${count}`, fontSize: 7, color: C.muted, alignment: "right", width: 150 }
       ]
     }),
@@ -247,9 +250,8 @@ export function challanSpec(out) {
     totals: null,
     showRates: false,
     notes: out.remarks,
-    signLabel: "Authorised Signatory",
     termsTitle: "Acknowledgement",
-    terms: "Received the above goods in good order and condition.\nReceiver's signature & stamp: ____________________"
+    terms: "Received the above goods in good order and condition."
   };
 }
 

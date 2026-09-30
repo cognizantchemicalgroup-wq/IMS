@@ -1,12 +1,14 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
-  reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES
+  reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES,
+  OPEN_PO_STATUSES, normalizeReceipt
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { poSpec, showDocument, safeFileName } from "./pdf.js";
 import { collection, doc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
+const n = (v) => Number(v) || 0;
 const page = await initPage("po");
 if (page) start();
 
@@ -26,8 +28,8 @@ async function start() {
       <div class="table-wrap"><table class="table"><thead><tr><th>PO No.</th><th>Date</th><th>Vendor</th><th>Deliver To</th><th>Items</th><th class="num">Value (₹)</th><th>Received</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
-  const TABS = [["ACTIVE", "Open & Partial"], ["OPEN", "Open"], ["PARTIALLY RECEIVED", "Partially received"], ["COMPLETED", "Completed"], ["SHORT CLOSED", "Short closed"], ["CANCELLED", "Cancelled"], ["ALL", "All"]];
-  const inTab = (po, t) => t === "ALL" || (t === "ACTIVE" ? ["OPEN", "PARTIALLY RECEIVED"].includes(po.status) : po.status === t);
+  const TABS = [["ACTIVE", "All open"], ["OPEN", "Open"], ["PARTIALLY RECEIVED", "Partially received"], ["AWAITING KANTA", "Awaiting Kanta"], ["PARTIALLY INWARDED", "Partially inwarded"], ["COMPLETED", "Completed"], ["CLOSED", "Closed"], ["CANCELLED", "Cancelled"], ["ALL", "All"]];
+  const inTab = (po, t) => t === "ALL" || (t === "ACTIVE" ? OPEN_PO_STATUSES.includes(po.status) : t === "CLOSED" ? ["CLOSED", "SHORT CLOSED"].includes(po.status) : po.status === t);
 
   function lineProgress(po) {
     const ordered = po.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -85,8 +87,9 @@ async function start() {
     const rows = pos.flatMap((p) => p.lines.map((l) => ({
       "PO No": p.poNo, Date: fmtDate(p.date), Vendor: p.vendor?.name, "Vendor GSTIN": p.vendor?.gstin || "", "Deliver To": warehouseByCode(p.warehouse).name,
       Item: l.name, HSN: l.hsn, Unit: l.unit, "Ordered Qty": l.qty, Rate: l.rate, "GST %": l.gstRate, "Line Amount": round(l.qty * l.rate, 2),
-      "Invoiced Qty": l.invoicedQty || 0, "Received Qty": l.receivedQty || 0, "Rejected Qty": l.rejectedQty || 0, "Transit Shortage": l.shortQty || 0,
-      "Pending Qty": Math.max(0, round(l.qty - (l.receivedQty || 0))), "PO Total": p.totals?.total, Status: p.status
+      "Invoiced Qty": l.invoicedQty || 0, "GRN Qty": l.grnQty || 0, "Kanta Qty": round((l.grnQty || 0) - (l.pendingKantaQty || 0) + (l.varianceQty || 0)),
+      "Short(-)/Excess(+)": l.varianceQty || 0, "Inward (Payable) Qty": l.receivedQty || 0, "Awaiting Kanta": l.pendingKantaQty || 0,
+      "Pending Qty": Math.max(0, round(l.qty - (l.receivedQty || 0))), "Payable Value (before GST)": round((l.receivedQty || 0) * l.rate, 2), "PO Total": p.totals?.total, Status: p.status
     })));
     if (!rows.length) { toast("Nothing to export."); return; }
     exportExcel(rows, `CCPL_Purchase_Orders_${isoDate()}.xlsx`, "Purchase Orders");
@@ -168,7 +171,7 @@ async function start() {
         paymentTerms: values.paymentTerms, placeOfSupply: values.placeOfSupply, dispatchThrough: values.dispatchThrough,
         destination: values.destination, deliveryTerms: values.deliveryTerms, expectedDate: values.expectedDate || "",
         notes: values.notes, terms: values.terms, intraState: intra(),
-        lines: lines.map((l) => ({ ...l, invoicedQty: 0, receivedQty: 0, rejectedQty: 0, shortQty: 0 })),
+        lines: lines.map((l) => ({ ...l, invoicedQty: 0, grnQty: 0, pendingKantaQty: 0, receivedQty: 0, varianceQty: 0 })),
         totals,
         itemIds: [...new Set(lines.map((l) => l.itemId))],
         updatedAt: serverTimestamp()
@@ -188,7 +191,7 @@ async function start() {
           }
           const ref = doc(collection(db, "purchaseOrders"));
           const number = await reserveNumber(tx, "PO", { date: values.date, site: wh.docCode });
-          commitNumber(tx, number);
+          commitNumber(tx, number, ref.id);
           tx.set(ref, { ...data, poNo: number.number, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
           logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created PO ${number.number} · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
           return { id: ref.id, poNo: number.number };
@@ -209,29 +212,41 @@ async function start() {
       getDocs(query(collection(db, "receipts"), where("poId", "==", po.id))),
       getDocs(query(collection(db, "activity"), where("refId", "==", po.id)))
     ]);
-    const receipts = receiptSnap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    const receipts = receiptSnap.docs.map((d) => normalizeReceipt({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
     const log = logSnap.docs.map((d) => d.data()).sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0));
     const inProcess = receipts.filter((r) => ["KANTA PENDING", "GRN PENDING"].includes(r.stage));
     const editable = canEdit && po.status === "OPEN" && !po.lines.some((l) => (l.invoicedQty || 0) > 0);
-    const closable = can("close") && ["OPEN", "PARTIALLY RECEIVED"].includes(po.status);
+    const closable = can("close") && OPEN_PO_STATUSES.includes(po.status);
     const modal = openModal({
       title: `${po.poNo}`,
       size: "full",
       body: `<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">${badge(po.status)}<span class="muted">${esc(po.vendor?.name)} · Deliver to ${esc(warehouseByCode(po.warehouse).name)} · ₹${money(po.totals?.total)}</span></div>
-        ${po.status === "SHORT CLOSED" ? `<div class="notice warn" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div>Short-closed by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}</div></div>` : ""}
+        ${["CLOSED", "SHORT CLOSED"].includes(po.status) ? `<div class="notice warn" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div>Closed by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}</div></div>` : ""}
         ${po.status === "CANCELLED" ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-ban"></i><div>Cancelled by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}</div></div>` : ""}
         <div class="detail-grid" style="margin-bottom:18px">
           <div><span>PO Date</span><b>${fmtDate(po.date)}</b></div><div><span>Payment Terms</span><b>${esc(po.paymentTerms || "—")}</b></div>
           <div><span>Expected Delivery</span><b>${fmtDate(po.expectedDate)}</b></div><div><span>Created By</span><b>${esc(po.createdBy?.name || "—")}</b></div>
           <div><span>Vendor GSTIN</span><b>${esc(po.vendor?.gstin || "—")}</b></div><div><span>Tax</span><b>${po.intraState ? "CGST + SGST" : "IGST"}</b></div>
         </div>
-        <div class="section-title">Quantity tracking</div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="num">Ordered</th><th class="num">Invoiced</th><th class="num">Received (GRN)</th><th class="num">Rejected</th><th class="num">Kanta shortage</th><th class="num">Pending</th><th>Progress</th></tr></thead><tbody>
-          ${po.lines.map((l) => `<tr><td class="strong">${esc(l.name)}</td><td class="num">${qty(l.qty)} ${esc(l.unit)}</td><td class="num">${qty(l.invoicedQty || 0)}</td><td class="num strong">${qty(l.receivedQty || 0)}</td><td class="num">${qty(l.rejectedQty || 0)}</td><td class="num" style="color:${(l.shortQty || 0) > 0 ? "var(--danger)" : "inherit"}">${qty(l.shortQty || 0)}</td><td class="num strong">${qty(Math.max(0, round(l.qty - (l.receivedQty || 0))))}</td><td>${progressBar(l.receivedQty || 0, l.qty)}</td></tr>`).join("")}
+        <div class="section-title">Item-wise tracking (Kanta is final)</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Inward</th><th class="num">Awaiting Kanta</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
+          ${po.lines.map((l) => {
+            const kanta = round(n(l.grnQty) - n(l.pendingKantaQty) + n(l.varianceQty));
+            const v = n(l.varianceQty);
+            return `<tr><td class="strong">${esc(l.name)}</td><td class="num">${qty(l.qty)} ${esc(l.unit)}</td><td class="num">${qty(n(l.invoicedQty))}</td><td class="num">${qty(n(l.grnQty))}</td><td class="num">${qty(kanta)}</td>
+              <td class="num strong" style="color:${v < 0 ? "var(--danger)" : v > 0 ? "var(--success)" : "inherit"}">${v > 0 ? "+" : ""}${qty(v)}</td><td class="num strong">${qty(n(l.receivedQty))}</td><td class="num">${qty(n(l.pendingKantaQty))}</td>
+              <td class="num strong">${qty(Math.max(0, round(l.qty - n(l.receivedQty))))}</td><td class="num">${money(n(l.receivedQty) * n(l.rate))}</td><td>${progressBar(n(l.receivedQty), l.qty)}</td></tr>`;
+          }).join("")}
         </tbody></table></div>
-        <div class="section-title">Inward transactions (${receipts.length})</div>
-        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Gate Entry</th><th>Date</th><th>Item</th><th>Invoice No.</th><th class="num">Invoice Qty</th><th class="num">Kanta Qty</th><th class="num">Shortage</th><th class="num">Accepted</th><th>GRN</th><th>Stage</th></tr></thead><tbody>
-          ${receipts.map((r) => `<tr><td class="strong nowrap">${esc(r.geNo)}</td><td class="nowrap">${fmtDateTime(r.createdAt)}</td><td>${esc(r.item?.name)}</td><td>${esc(r.invoiceNo)}</td><td class="num">${qty(r.invoiceQty)}</td><td class="num">${r.kanta ? qty(r.kanta.receivedQty) : "—"}</td><td class="num" style="color:${(r.shortageQty || 0) > 0 ? "var(--danger)" : "inherit"}">${r.kanta ? qty(r.shortageQty || 0) : "—"}</td><td class="num">${r.grn ? qty(r.grn.acceptedQty) : "—"}</td><td class="nowrap">${esc(r.grn?.grnNo || "—")}</td><td>${badge(r.stage)}</td></tr>`).join("")}
+        <div class="section-title">Invoices / receipts (${receipts.length})</div>
+        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th>GRN No.</th><th>Stage</th></tr></thead><tbody>
+          ${receipts.flatMap((r) => r.lines.map((l, i) => {
+            const v = l.kantaQty !== undefined ? round(l.kantaQty - l.grnQty) : null;
+            return `<tr>${i === 0 ? `<td class="strong nowrap" rowspan="${r.lines.length}">${esc(r.geNo)}</td><td class="nowrap" rowspan="${r.lines.length}">${fmtDateTime(r.createdAt)}</td><td rowspan="${r.lines.length}">${esc(r.invoiceNo)}</td>` : ""}
+              <td>${esc(l.name)}</td><td class="num">${qty(l.invoiceQty)}</td><td class="num">${l.grnQty !== undefined ? qty(l.grnQty) : "—"}</td><td class="num">${l.kantaQty !== undefined ? qty(l.kantaQty) : "—"}</td>
+              <td class="num" style="color:${v < 0 ? "var(--danger)" : v > 0 ? "var(--success)" : "inherit"}">${v === null ? "—" : `${v > 0 ? "+" : ""}${qty(v)}`}</td>
+              ${i === 0 ? `<td class="nowrap" rowspan="${r.lines.length}">${esc(r.grn?.grnNo || "—")}</td><td rowspan="${r.lines.length}">${badge(r.stage === "COMPLETED" ? "INWARDED" : r.stage)}</td>` : ""}</tr>`;
+          })).join("")}
         </tbody></table></div>` : '<p class="muted">No material has arrived against this PO yet.</p>'}
         <div class="section-title">History</div>
         <ul class="timeline">${log.map((a) => `<li><time>${fmtDateTime(a.at)}</time><div><b>${esc(a.userName)}</b> · ${esc(a.summary)}</div></li>`).join("") || '<li class="muted">No history.</li>'}</ul>`,
@@ -239,8 +254,8 @@ async function start() {
         ${canEdit ? '<button class="btn" id="dupPo"><i class="fa-regular fa-copy"></i> Duplicate</button>' : ""}
         ${editable ? '<button class="btn" id="editPo"><i class="fa-solid fa-pen"></i> Edit</button>' : ""}
         ${editable ? '<button class="btn danger" id="cancelPo"><i class="fa-solid fa-ban"></i> Cancel PO</button>' : ""}
-        ${closable && !editable ? '<button class="btn gold" id="closePo"><i class="fa-solid fa-flag-checkered"></i> Mark complete (short close)</button>' : ""}
-        ${isAdmin() && po.status === "SHORT CLOSED" ? '<button class="btn" id="reopenPo">Reopen</button>' : ""}
+        ${closable && !editable ? '<button class="btn gold" id="closePo"><i class="fa-solid fa-flag-checkered"></i> Close PO (mark complete)</button>' : ""}
+        ${isAdmin() && ["CLOSED", "SHORT CLOSED"].includes(po.status) ? '<button class="btn" id="reopenPo">Reopen</button>' : ""}
         <button class="btn primary" id="pdfPo"><i class="fa-solid fa-file-pdf"></i> View / Download PDF</button>`
     });
     const $ = (s) => modal.el.querySelector(s);
@@ -248,7 +263,7 @@ async function start() {
     $("#editPo")?.addEventListener("click", () => { modal.close(); openEditor(po); });
     $("#dupPo")?.addEventListener("click", () => { modal.close(); openEditor(po, { duplicate: true }); });
     const closeWith = async (status, button) => {
-      if (status === "SHORT CLOSED" && inProcess.length) {
+      if (status === "CLOSED" && inProcess.length) {
         toast(`${inProcess.length} inward entr${inProcess.length === 1 ? "y is" : "ies are"} still pending Kanta/GRN for this PO. Complete or delete them first.`, "error");
         return;
       }
@@ -256,16 +271,16 @@ async function start() {
       const reason = await confirmDialog(status === "CANCELLED"
         ? `Cancel ${po.poNo}? The vendor should be informed separately.`
         : `Mark ${po.poNo} as complete even though it is not fully received? Pending quantity (${pending}) will be dropped and no more inward will be accepted against this PO.`,
-      { title: status === "CANCELLED" ? "Cancel purchase order" : "Short close purchase order", okText: status === "CANCELLED" ? "Cancel PO" : "Mark complete", danger: status === "CANCELLED", input: { label: "Reason", required: true, placeholder: "e.g. Vendor cannot supply balance / requirement changed" } });
+      { title: status === "CANCELLED" ? "Cancel purchase order" : "Close purchase order", okText: status === "CANCELLED" ? "Cancel PO" : "Close PO", danger: status === "CANCELLED", input: { label: "Reason", required: true, placeholder: "e.g. Vendor cannot supply balance / requirement changed" } });
       if (!reason) return;
       const done = busy(button);
       try {
         await runTransaction(db, async (tx) => {
           const ref = doc(db, "purchaseOrders", po.id);
           const cur = (await tx.get(ref)).data();
-          if (!["OPEN", "PARTIALLY RECEIVED"].includes(cur.status)) throw new Error(`PO is already ${cur.status}.`);
+          if (!OPEN_PO_STATUSES.includes(cur.status)) throw new Error(`PO is already ${cur.status}.`);
           tx.update(ref, { status, closeReason: reason, closedAt: serverTimestamp(), closedBy: { uid: state.user.uid, name: state.profile.name || state.user.email }, updatedAt: serverTimestamp() });
-          logActivity(tx, { module: "Purchase Orders", action: status === "CANCELLED" ? "CANCEL" : "SHORT CLOSE", refId: po.id, refNo: po.poNo, summary: `${status === "CANCELLED" ? "Cancelled" : "Short-closed"} PO ${po.poNo}. Pending dropped: ${pending}. Reason: ${reason}` });
+          logActivity(tx, { module: "Purchase Orders", action: status === "CANCELLED" ? "CANCEL" : "CLOSE", refId: po.id, refNo: po.poNo, summary: `${status === "CANCELLED" ? "Cancelled" : "Closed"} PO ${po.poNo}. Pending dropped: ${pending}. Reason: ${reason}` });
         });
         toast(`${po.poNo} ${status === "CANCELLED" ? "cancelled" : "marked complete"}.`, "ok");
         modal.close();
@@ -273,7 +288,7 @@ async function start() {
       } catch (error) { reportError(error); } finally { done(); }
     };
     $("#cancelPo")?.addEventListener("click", (e) => closeWith("CANCELLED", e.currentTarget));
-    $("#closePo")?.addEventListener("click", (e) => closeWith("SHORT CLOSED", e.currentTarget));
+    $("#closePo")?.addEventListener("click", (e) => closeWith("CLOSED", e.currentTarget));
     $("#reopenPo")?.addEventListener("click", async (e) => {
       const button = e.currentTarget;
       if (!(await confirmDialog(`Reopen ${po.poNo}?`))) return;

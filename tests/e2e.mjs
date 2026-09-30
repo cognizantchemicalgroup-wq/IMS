@@ -30,7 +30,8 @@ const USERS = [
   { name: "Test Admin", email: "admin@test.ccpl", role: "admin", password: "Admin#12345" },
   { name: "Test Manager", email: "manager@test.ccpl", role: "manager", password: "Manager#12345" },
   { name: "Test Operator", email: "operator@test.ccpl", role: "operator", password: "Operator#12345" },
-  { name: "Inactive Person", email: "inactive@test.ccpl", role: "operator", password: "Inactive#12345", active: false }
+  { name: "Inactive Person", email: "inactive@test.ccpl", role: "operator", password: "Inactive#12345", active: false },
+  { name: "Rupesh Mudliar", email: "rupesh.mudliar@cognizantchemical.com", role: "admin", password: "Rupesh#12345" }
 ];
 
 let passed = 0;
@@ -131,44 +132,49 @@ async function createPo(vendor, warehouse, lines) {
   return { poNo: text.replace(" saved.", ""), pdf: file };
 }
 
-async function gateEntry({ poNo, itemText, invoiceNo, invoiceQty, warehouse }) {
+// Invoice / receipt against a PO: qtys = { "Item name": qty }
+async function receiptEntry({ poNo, invoiceNo, qtys, warehouse }) {
   await goto("inward.html");
   await page.click("#newEntry");
   const m = modal();
   await selectContaining(m.locator("select[name=poId]"), poNo);
-  if (itemText) await selectContaining(m.locator("select[name=lineId]"), itemText);
   if (warehouse) await m.locator("select[name=warehouse]").selectOption(warehouse);
   await m.locator("input[name=invoiceNo]").fill(invoiceNo);
-  await m.locator("input[name=invoiceQty]").fill(String(invoiceQty));
+  for (const [name, q] of Object.entries(qtys)) await m.locator("#itemArea tr", { hasText: name }).locator("input[data-line]").fill(String(q));
   await m.locator("input[name=vehicleNo]").fill("MH46AB1234");
   await m.locator("#saveGe").click();
   await expectToast();
-  return (await one("receipts", "invoiceNo", invoiceNo));
+  return one("receipts", "invoiceNo", invoiceNo);
 }
-async function kanta(receipt, receivedQty) {
+// GRN: qtys = { "Item name": grnQty } (defaults to invoice qty)
+async function grnStep(receipt, qtys = {}) {
   await goto("inward.html");
-  await page.locator(`[data-kanta="${receipt.id}"]`).click();
-  const m = modal();
-  await m.locator("input[name=receivedQty]").fill(String(receivedQty));
-  await m.locator("#saveK").click();
-  await expectToast();
-}
-async function grn(receipt, acceptedQty = null) {
-  await goto("inward.html#grn");
   await page.click('[data-tab="GRN PENDING"]');
   await page.locator(`[data-grn="${receipt.id}"]`).click();
   const m = modal();
-  if (acceptedQty !== null) await m.locator("input[name=accepted]").fill(String(acceptedQty));
+  for (const [name, q] of Object.entries(qtys)) await m.locator("tr", { hasText: name }).locator("input").fill(String(q));
   await m.locator("#saveG").click();
   await expectToast();
 }
-async function receiveFully(poNo, itemText, invoices, warehouse) {
-  for (const [invoiceNo, qty, kantaQty] of invoices) {
-    const r = await gateEntry({ poNo, itemText, invoiceNo, invoiceQty: qty, warehouse });
-    await kanta(r, kantaQty ?? qty);
-    await grn(r);
+// Kanta: qtys = { "Item name": kantaQty } (defaults to GRN qty)
+async function kantaStep(receipt, qtys = {}) {
+  await goto("inward.html#kanta");
+  await page.click('[data-tab="KANTA PENDING"]');
+  await page.locator(`[data-kanta="${receipt.id}"]`).click();
+  const m = modal();
+  for (const [name, q] of Object.entries(qtys)) await m.locator("tr", { hasText: name }).locator("input").fill(String(q));
+  await m.locator("#saveK").click();
+  await expectToast();
+}
+async function receiveFully(poNo, invoices) {
+  for (const [invoiceNo, qtys, kantaQtys] of invoices) {
+    const r = await receiptEntry({ poNo, invoiceNo, qtys });
+    await grnStep(r);
+    await kantaStep(r, kantaQtys || {});
   }
 }
+const lineOf = (po, name) => po.lines.find((l) => l.name.startsWith(name));
+const round = (v, dp = 3) => Math.round(v * 10 ** dp) / 10 ** dp;
 
 try {
   /* ================= 1. Security / login ================= */
@@ -199,7 +205,9 @@ try {
   check(vendor?.stateCode === "27" && vendor?.pan === "AACCP5074E" && vendor?.state === "Maharashtra", "vendor GSTIN auto-fills state code, state and PAN");
   await addMaster("parties.html", { name: "Gujarat Acids Pvt Ltd", gstin: "24AABCG1234H1Z5", city: "Vapi", paymentTermsDays: 45 });
   await addMaster("parties.html", { name: "Deepak Fertilisers Ltd", gstin: "27AAACD1234E1ZX", city: "Taloja" });
-  await addMaster("items.html", { name: "Apple", hsn: "08081000", gstRate: 18 }, { category: "Raw Material", unit: "NOS" });
+  await addMaster("items.html", { name: "Apple", hsn: "08081000", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
+  await addMaster("items.html", { name: "Methanol", hsn: "29051100", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
+  await addMaster("items.html", { name: "IPA", hsn: "29051220", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
   await addMaster("items.html", { name: "Hydrochloric Acid 33%", hsn: "28061000", gstRate: 18 }, { category: "Finished Goods", unit: "KG" });
   // Duplicate protection
   await goto("parties.html"); await page.click("#addBtn");
@@ -251,68 +259,95 @@ try {
   check((await one("parties", "name", "Old Supplier"))?.active === false, "Inactive status from Zoho carried over");
 
   /* ================= 3. Numbering ================= */
-  console.log("\n3. PO numbering continues from 823");
-  await goto("settings.html");
-  await page.locator('[data-num="PO"]').fill("823");
-  await page.click('[data-setnum="PO"]');
-  await modal().locator("#confirmOk").click();
-  await expectToast();
+  console.log("\n3. Number format CCPL/PO/26-27/001");
+  const setNumbering = async (type, format, next, digits = 3) => {
+    await goto("settings.html");
+    const row = page.locator(`#numRows tr[data-k="${type}"]`);
+    await row.locator("[data-fmt]").fill(format);
+    await row.locator("[data-pad]").fill(String(digits));
+    await row.locator("[data-num]").fill(String(next));
+    await row.locator(`[data-setnum="${type}"]`).click();
+    await modal().locator("#confirmOk").click();
+    await expectToast();
+  };
+  await setNumbering("PO", "CCPL/PO/{FY}/{SEQ}", 1);
 
-  /* ================= 4. PO for 10 apples, partial receipts, kanta shortage, short close ================= */
-  console.log("\n4. PO for 10 apples");
+  /* ================= 4. PO for 10 KG apples: invoice → GRN → Kanta ================= */
+  console.log("\n4. Apple PO: 5 + 5, Kanta 4.8 on the second");
   const applePo = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 10, rate: 100 }]);
-  check(applePo.poNo === "CCPL/PG/823/26-27", `PO number follows CCPL format (${applePo.poNo})`);
-  const pdfHead = (await readFile(applePo.pdf)).subarray(0, 5).toString();
-  check(pdfHead === "%PDF-", "PO PDF downloaded");
+  check(applePo.poNo === "CCPL/PO/26-27/001", `PO number uses the set format (${applePo.poNo})`);
+  check((await readFile(applePo.pdf)).subarray(0, 5).toString() === "%PDF-", "PO PDF downloaded");
   let po = await one("purchaseOrders", "poNo", applePo.poNo);
   check(near(po.totals.subTotal, 1000) && near(po.totals.total, 1180) && po.totals.taxes.map((t) => t.kind).join() === "CGST,SGST", "PO totals: 1000 + CGST 90 + SGST 90 = 1180");
 
-  const r1 = await gateEntry({ poNo: applePo.poNo, invoiceNo: "INV-A1", invoiceQty: 5 });
+  const r1 = await receiptEntry({ poNo: applePo.poNo, invoiceNo: "INV-A1", qtys: { Apple: 5 } });
   po = await one("purchaseOrders", "poNo", applePo.poNo);
-  check(po.lines[0].invoicedQty === 5 && po.status === "PARTIALLY RECEIVED" && (po.lines[0].receivedQty || 0) === 0, "gate entry: invoiced 5, stock not yet received");
-  await kanta(r1, 5);
-  await grn(r1);
+  check(po.status === "PARTIALLY RECEIVED" && lineOf(po, "Apple").invoicedQty === 5 && (await stockOf("PG-106", "Apple")) === 0, "invoice entered → PARTIALLY RECEIVED, no stock yet");
+  await grnStep(r1);
   po = await one("purchaseOrders", "poNo", applePo.poNo);
-  check(po.lines[0].receivedQty === 5 && po.status === "PARTIALLY RECEIVED", "after 1st GRN: received 5 / 10");
-  check(await stockOf("PG-106", "Apple") === 5, "stock at PG-106 = 5 apples");
+  check(po.status === "AWAITING KANTA" && lineOf(po, "Apple").grnQty === 5 && (await stockOf("PG-106", "Apple")) === 0, "GRN 5 → AWAITING KANTA, still no stock (GRN is not final)");
+  await kantaStep(r1);
+  po = await one("purchaseOrders", "poNo", applePo.poNo);
+  check(po.status === "PARTIALLY INWARDED" && lineOf(po, "Apple").receivedQty === 5 && (await stockOf("PG-106", "Apple")) === 5, "Kanta 5 → stock inward 5 → PARTIALLY INWARDED");
 
-  const r2 = await gateEntry({ poNo: applePo.poNo, invoiceNo: "INV-A2", invoiceQty: 5 });
-  await kanta(r2, 4);
-  let rec2 = await one("receipts", "invoiceNo", "INV-A2");
-  check(rec2.shortageQty === 1, "kanta on invoice of 5 found only 4 → shortage 1 recorded on that transaction");
-  await grn(r2);
+  const r2 = await receiptEntry({ poNo: applePo.poNo, invoiceNo: "INV-A2", qtys: { Apple: 5 } });
+  await grnStep(r2);
+  await kantaStep(r2, { Apple: 4.8 });
+  const rec2 = await one("receipts", "invoiceNo", "INV-A2");
+  check(near(rec2.lines[0].kantaQty, 4.8) && near(rec2.lines[0].varianceQty, -0.2) && near(rec2.lines[0].payableQty, 4.8), "Kanta 4.8 on GRN 5 → shortage 0.2, payable 4.8 on that transaction");
   po = await one("purchaseOrders", "poNo", applePo.poNo);
-  check(po.lines[0].receivedQty === 9 && po.lines[0].shortQty === 1 && po.status === "PARTIALLY RECEIVED", "PO shows 9 received, 1 short, still open");
-  check(await stockOf("PG-106", "Apple") === 9, "stock at PG-106 = 9 apples");
+  const apple = lineOf(po, "Apple");
+  check(near(apple.receivedQty, 9.8) && near(apple.varianceQty, -0.2) && apple.grnQty === 10 && po.status === "PARTIALLY INWARDED", "PO: GRN 10, Kanta/inward 9.8, short 0.2, pending 0.2");
+  check(near(await stockOf("PG-106", "Apple"), 9.8), "stock at PG-106 = 9.8 KG (Kanta is final)");
   // Duplicate invoice guard
   await goto("inward.html"); await page.click("#newEntry");
   await selectContaining(modal().locator("select[name=poId]"), applePo.poNo);
-  await modal().locator("input[name=invoiceNo]").fill("INV-A2"); await modal().locator("input[name=invoiceQty]").fill("1");
+  await modal().locator("input[name=invoiceNo]").fill("INV-A2");
+  await modal().locator("#itemArea tr", { hasText: "Apple" }).locator("input[data-line]").fill("1");
   await modal().locator("#saveGe").click();
   check((await expectToast("error")).includes("already entered"), "same invoice cannot be entered twice");
   await closeAllModals();
-  // PO detail view + short close
+  // PO detail + close
   await page.goto(`${BASE}/purchase-orders.html?open=${po.id}`);
   await modal().locator("#closePo").waitFor();
   const detailText = await modal().textContent();
-  check(detailText.includes("INV-A1") && detailText.includes("INV-A2"), "PO detail lists every inward transaction");
+  check(detailText.includes("INV-A1") && detailText.includes("INV-A2") && detailText.includes("Kanta Qty") && detailText.includes("-0.2"), "PO detail shows PO/GRN/Kanta/Short/Inward/Pending and every invoice");
   await page.screenshot({ path: path.join(OUT, "02-po-detail-partial.png") });
   await modal().locator("#closePo").click();
-  await page.locator("#confirmInput").fill("Vendor cannot supply the last apple");
+  await page.locator("#confirmInput").fill("Vendor cannot supply the balance 0.2 KG");
   await page.click("#confirmOk");
   await expectToast();
   po = await one("purchaseOrders", "poNo", applePo.poNo);
-  check(po.status === "SHORT CLOSED" && po.closeReason.includes("last apple"), "PO short-closed (marked complete) with reason");
+  check(po.status === "CLOSED" && po.closeReason.includes("balance"), "PO closed (mark complete) with reason");
   await goto("inward.html"); await page.click("#newEntry");
-  check(!(await modal().locator("select[name=poId]").textContent()).includes(applePo.poNo), "short-closed PO no longer offered for inward");
+  check(!(await modal().locator("select[name=poId]").textContent()).includes(applePo.poNo), "closed PO no longer offered for inward");
   await closeAllModals();
+
+  /* ================= 4b. Multi-item PO: Methanol + IPA ================= */
+  console.log("\n4b. Multi-item PO tracked product-wise");
+  const multiPo = await createPo("Pyramid", "PG-106", [{ item: "Methanol", qty: 20000, rate: 30 }, { item: "IPA", qty: 20, rate: 90 }]);
+  const rm = await receiptEntry({ poNo: multiPo.poNo, invoiceNo: "INV-M1", qtys: { Methanol: 10000, IPA: 10 } });
+  check(rm.lines.length === 2, "one invoice carries both items");
+  await grnStep(rm);
+  await kantaStep(rm, { Methanol: 9970, IPA: 10 });
+  po = await one("purchaseOrders", "poNo", multiPo.poNo);
+  const meth = lineOf(po, "Methanol"); const ipa = lineOf(po, "IPA");
+  check(meth.grnQty === 10000 && meth.receivedQty === 9970 && meth.varianceQty === -30 && round(meth.qty - meth.receivedQty) === 10030, "Methanol: PO 20,000 · GRN 10,000 · Kanta 9,970 · short −30 · pending 10,030");
+  check(ipa.receivedQty === 10 && round(ipa.qty - ipa.receivedQty) === 10 && po.status === "PARTIALLY INWARDED", "IPA: 10 received / 10 pending; PO PARTIALLY INWARDED");
+  await page.goto(`${BASE}/purchase-orders.html?open=${po.id}`);
+  await modal().locator("#pdfPo").waitFor();
+  await page.screenshot({ path: path.join(OUT, "02b-po-multi-item.png") });
+  await closeAllModals();
+  await receiveFully(multiPo.poNo, [["INV-M2", { Methanol: 10030, IPA: 10 }]]);
+  po = await one("purchaseOrders", "poNo", multiPo.poNo);
+  check(po.status === "COMPLETED", "second invoice brings both items to full → COMPLETED");
 
   /* ================= 5. Drums PO fully received → auto COMPLETED ================= */
   console.log("\n5. Packaging PO (M S Drum) completes automatically");
   const drumPo = await createPo("Pyramid", "PG-106", [{ item: "M S Drum", qty: 200, rate: 1810 }]);
   po = await one("purchaseOrders", "poNo", drumPo.poNo);
-  check(po.poNo === "CCPL/PG/824/26-27" && near(po.totals.total, 427160), `drum PO ${po.poNo} total Rs.427,160 (matches your sample PO)`);
-  await receiveFully(drumPo.poNo, null, [["INV-D1", 100], ["INV-D2", 100]]);
+  check(po.poNo === "CCPL/PO/26-27/003" && near(po.totals.total, 427160), `drum PO ${po.poNo} total Rs.427,160 (matches your sample PO)`);
+  await receiveFully(drumPo.poNo, [["INV-D1", { "M S Drum": 100 }], ["INV-D2", { "M S Drum": 100 }]]);
   po = await one("purchaseOrders", "poNo", drumPo.poNo);
   check(po.status === "COMPLETED" && po.lines[0].receivedQty === 200, "two invoices of 100 → PO COMPLETED automatically");
   check(await stockOf("PG-106", "M S Drum") === 200, "packaging stock at PG-106 = 200 drums");
@@ -322,14 +357,34 @@ try {
   const acidPo = await createPo("Gujarat Acids", "PG-106", [{ item: "Hydrochloric", qty: 10000, rate: 12 }]);
   po = await one("purchaseOrders", "poNo", acidPo.poNo);
   check(po.totals.taxes.length === 1 && po.totals.taxes[0].kind === "IGST" && near(po.totals.taxes[0].amount, 21600), "Gujarat vendor → IGST 18% = 21,600");
-  await receiveFully(acidPo.poNo, null, [["GJ-9001", 10000, 9980]]);
-  check(await stockOf("PG-106", "Hydrochloric Acid 33%") === 9980, "tanker kanta 9,980 KG added to PG-106");
+  await receiveFully(acidPo.poNo, [["GJ-9001", { Hydrochloric: 10000 }, { Hydrochloric: 9980 }]]);
+  check(await stockOf("PG-106", "Hydrochloric Acid 33%") === 9980, "tanker Kanta 9,980 KG added to PG-106");
   check((await one("purchaseOrders", "poNo", acidPo.poNo)).status === "COMPLETED", "9,980 of 10,000 KG is within 0.5% tolerance → tanker PO COMPLETED");
+
+  /* ================= 6b. Duplicate-proof numbering ================= */
+  console.log("\n6b. Numbering never repeats");
+  await setNumbering("PO", "CCPL/PO/{FY}/{SEQ}", 2);
+  const dupTest = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 1, rate: 1 }]);
+  check(dupTest.poNo === "CCPL/PO/26-27/005", `counter set back to 002 by mistake → system skips used numbers and issues ${dupTest.poNo}`);
+
+  /* ================= 6c. Opening / existing stock ================= */
+  console.log("\n6c. Add Existing / Opening Stock");
+  await goto("inventory.html");
+  await page.click("#openingBtn");
+  let m = modal();
+  await m.locator("select[name=warehouse]").selectOption("BREEZE");
+  await selectContaining(m.locator("select[name=itemId]"), "Carboy");
+  await m.locator("input[name=qty]").fill("50");
+  await m.locator("input[name=reason]").fill("Opening stock counted on go-live day");
+  await m.locator("#saveOs").click();
+  await expectToast();
+  const os = await one("adjustments", "kind", "OPENING");
+  check(await stockOf("BREEZE", "Carboy") === 50 && os?.adjNo.startsWith("OS/") && os.reason.includes("go-live") && os.createdBy?.name === "Test Admin", "opening stock +50 Carboy at Breeze with its own OS number, reason and user");
 
   /* ================= 7. Transfer PG-106 → Taloja with transit loss ================= */
   console.log("\n7. Stock transfer PG → Taloja");
   await goto("transfers.html"); await page.click("#newTr");
-  let m = modal();
+  m = modal();
   await m.locator("select[name=from]").selectOption("PG-106");
   await m.locator("select[name=to]").selectOption("TALOJA");
   await selectContaining(m.locator("select[data-f=itemId]").first(), "Hydrochloric");
@@ -363,7 +418,7 @@ try {
   await page.click("#confirmOk");
   await expectToast();
   check(await stockOf("TALOJA", "M S Drum") === 28, "2 destroyed drums written off at Taloja (30 → 28)");
-  const adj = await one("adjustments", "status", "POSTED");
+  const adj = await one("adjustments", "type", "Destroyed");
   await goto("adjustments.html");
   await page.locator(`[data-del="${adj.id}"]`).click();
   await page.locator("#confirmInput").fill("Entered by mistake");
@@ -392,7 +447,7 @@ try {
   await m.locator("#saveS").click();
   await expectToast();
   const quote = await one("quotations", "status", "DRAFT");
-  check(quote.quoteNo === "CCPL/QT/0001/26-27" && near(quote.totals.total, 59000), `quotation ${quote.quoteNo} = Rs.59,000`);
+  check(quote.quoteNo === "CCPL/QT/26-27/001" && near(quote.totals.total, 59000), `quotation ${quote.quoteNo} = Rs.59,000`);
   await goto("quotations.html");
   await page.locator(`[data-view="${quote.id}"]`).first().click();
   await modal().locator('[data-act="ACCEPTED"]').click();
@@ -409,7 +464,7 @@ try {
   await m.locator("#saveS").click();
   await expectToast();
   const so = await one("salesOrders", "quotationId", quote.id);
-  check(so && so.soNo === "CCPL/SO/0001/26-27" && (await one("quotations", "quoteNo", quote.quoteNo)).status === "CONVERTED", "accepted quotation converted into SO");
+  check(so && so.soNo === "CCPL/SO/26-27/001" && (await one("quotations", "quoteNo", quote.quoteNo)).status === "CONVERTED", "accepted quotation converted into SO");
 
   // Try to over-dispatch first (more than Taloja stock) — must be blocked
   await goto("outward.html"); await page.click("#newOut");
@@ -488,6 +543,40 @@ try {
   await login("store@test.ccpl", "Store#123456");
   await page.waitForURL(/dashboard\.html/, { timeout: 20000 });
   check(true, "newly created user can sign in");
+  await logout();
+
+  /* ================= 11b. Exceptions & PDF wording ================= */
+  console.log("\n11b. Exceptions");
+  await login("admin@test.ccpl", "Admin#12345");
+  await page.waitForURL(/dashboard\.html/);
+  await goto("exceptions.html");
+  const exText = await page.textContent("#page");
+  check(exText.includes("Kanta shortage / excess") && exText.includes("Apple: GRN 5 → Kanta 4.8") && exText.includes("Methanol: GRN 10,000 → Kanta 9,970"), "Exceptions lists Kanta shortages (Apple −0.2, Methanol −30)");
+  check(exText.includes("Invoice qty not matching Kanta") && exText.includes("Stock manually adjusted") && exText.includes("Opening / existing stock"), "Exceptions lists invoice≠payable and manual stock entries");
+  await page.screenshot({ path: path.join(OUT, "08-exceptions.png"), fullPage: true });
+  check(await page.locator('.nav-link[href="access.html"]').count() === 0, "Access Audit is hidden from other admins");
+  const deniedSessions = await page.evaluate(async () => {
+    const { db } = await import("./js/firebase-config.js");
+    const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    try { await fs.getDocs(fs.collection(db, "sessions")); return "allowed"; } catch (e) { return e.code; }
+  });
+  check(deniedSessions === "permission-denied", "other admins cannot read login sessions (enforced by the database rules)");
+  await logout();
+
+  console.log("\n11c. Private Access Audit (super admin only)");
+  await login("rupesh.mudliar@cognizantchemical.com", "Rupesh#12345");
+  await page.waitForURL(/dashboard\.html/);
+  await goto("access.html");
+  let accText = await page.textContent("#page");
+  const usersOk = accText.includes("Test Admin") && accText.includes("Online now") && accText.includes("Last login");
+  check(usersOk, "super admin sees every user's last login / last active");
+  await page.click('[data-tab="sessions"]');
+  accText = await page.textContent("#page");
+  check(accText.includes("Sign out") && /\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}/.test(accText), "login sessions show login, last active and logout times");
+  await page.click('[data-tab="grnKanta"]');
+  accText = await page.textContent("#page");
+  check(accText.includes("Average GRN → Kanta") && accText.includes("Test Admin") && accText.includes("GRN/26-27/"), "GRN → Kanta timing shows who did GRN and Kanta, and how long it took");
+  await page.screenshot({ path: path.join(OUT, "09-access-audit.png"), fullPage: true });
   await logout();
 
   /* ================= 12. Role restrictions ================= */

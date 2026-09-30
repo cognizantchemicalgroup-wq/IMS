@@ -3,6 +3,7 @@ import {
   onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { startSession } from "./core.js";
 
 const form = document.getElementById("loginForm");
 const message = document.getElementById("loginMessage");
@@ -17,15 +18,15 @@ if (new URLSearchParams(location.search).get("denied")) {
   show("This account is not authorised for the CCPL ERP, or it has been deactivated.");
 }
 
-async function isActiveUser(user) {
+async function activeProfile(user) {
   const snap = await getDoc(doc(db, "users", user.uid));
-  return snap.exists() && snap.data().active === true;
+  return snap.exists() && snap.data().active === true ? snap.data() : null;
 }
 
 let signingIn = false;
 onAuthStateChanged(auth, async (user) => {
   if (!user || signingIn) return;
-  if (await isActiveUser(user).catch(() => false)) window.location.replace("dashboard.html");
+  if (await activeProfile(user).catch(() => null)) window.location.replace("dashboard.html");
   else await signOut(auth);
 });
 
@@ -40,11 +41,13 @@ form.addEventListener("submit", async (event) => {
   try {
     await setPersistence(auth, browserLocalPersistence);
     const { user } = await signInWithEmailAndPassword(auth, email, password);
-    if (!(await isActiveUser(user))) {
+    const profile = await activeProfile(user);
+    if (!profile) {
       await signOut(auth);
       show("This account is not authorised for the CCPL ERP, or it has been deactivated.");
       return;
     }
+    await startSession(user, profile).catch((e) => console.warn("Could not record session", e));
     window.location.replace("dashboard.html");
   } catch (error) {
     const code = error.code || "";

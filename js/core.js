@@ -3,7 +3,7 @@
 import { auth, db, USING_EMULATOR } from "./firebase-config.js";
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  collection, doc, getDoc, getDocs, query, orderBy, serverTimestamp, Timestamp
+  collection, doc, getDoc, getDocs, query, orderBy, serverTimestamp, Timestamp, setDoc, updateDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 export { db, auth };
@@ -40,7 +40,8 @@ export const DEFAULT_COMPANY = {
     "Subject to Raigad jurisdiction."
   ].join("\n"),
   soTerms: "Subject to Raigad jurisdiction.",
-  poTolerancePct: 0.5
+  poTolerancePct: 0.5,
+  poOverdueDays: 15
 };
 
 export const DEFAULT_WAREHOUSES = [
@@ -54,15 +55,22 @@ export const ITEM_CATEGORIES = ["Raw Material", "Finished Goods", "Packaging", "
 export const UNITS = ["KG", "MT", "LTR", "KL", "NOS", "DRUM", "CARBOY", "BAG", "BOX", "SET"];
 
 export const NUMBER_FORMATS = {
-  PO: "CCPL/{SITE}/{SEQ}/{FY}",
-  QT: "CCPL/QT/{SEQ}/{FY}",
-  SO: "CCPL/SO/{SEQ}/{FY}",
-  GE: "GE/{SEQ}/{FY}",
-  GRN: "GRN/{SEQ}/{FY}",
-  DC: "CCPL/DC/{SEQ}/{FY}",
-  ST: "ST/{SEQ}/{FY}",
-  ADJ: "ADJ/{SEQ}/{FY}"
+  PO: "CCPL/PO/{FY}/{SEQ}",
+  QT: "CCPL/QT/{FY}/{SEQ}",
+  SO: "CCPL/SO/{FY}/{SEQ}",
+  GE: "GE/{FY}/{SEQ}",
+  GRN: "GRN/{FY}/{SEQ}",
+  DC: "CCPL/DC/{FY}/{SEQ}",
+  ST: "ST/{FY}/{SEQ}",
+  ADJ: "ADJ/{FY}/{SEQ}",
+  OS: "OS/{FY}/{SEQ}"
 };
+export const NUMBER_PAD = { PO: 3, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4 };
+export const NUMBER_LABELS = { PO: "Purchase Order", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock" };
+
+/** The only account that sees the private access / session audit page. */
+export const SUPER_ADMIN_EMAIL = "rupesh.mudliar@cognizantchemical.com";
+export const isSuperAdmin = () => (state.user?.email || "").toLowerCase() === SUPER_ADMIN_EMAIL;
 
 /* ------------------------------------------------------------------ */
 /* Roles                                                               */
@@ -262,7 +270,7 @@ export function confirmDialog(message, { title = "Please confirm", okText = "Con
 
 export function badge(status) {
   const map = {
-    DRAFT: "gray", OPEN: "blue", "PARTIALLY RECEIVED": "amber", COMPLETED: "green", "SHORT CLOSED": "gold", CANCELLED: "red",
+    DRAFT: "gray", OPEN: "blue", "PARTIALLY RECEIVED": "amber", "AWAITING KANTA": "amber", "PARTIALLY INWARDED": "indigo", COMPLETED: "green", CLOSED: "gold", "SHORT CLOSED": "gold", CANCELLED: "red",
     SENT: "blue", ACCEPTED: "green", REJECTED: "red", CONVERTED: "indigo", EXPIRED: "gray",
     "PARTIALLY DISPATCHED": "amber", "KANTA PENDING": "amber", "GRN PENDING": "blue", "IN TRANSIT": "amber", RECEIVED: "green",
     POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray"
@@ -331,7 +339,8 @@ export const state = { user: null, profile: null, company: { ...DEFAULT_COMPANY 
 export async function listCollection(name, orderField = null, direction = "asc") {
   const ref = orderField ? query(collection(db, name), orderBy(orderField, direction)) : collection(db, name);
   const snap = await getDocs(ref);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // Pending server timestamps (a write still in flight) show as the estimated time instead of empty.
+  return snap.docs.map((d) => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }));
 }
 
 export async function loadSettings() {
@@ -354,18 +363,34 @@ export const warehouseOptions = (selected = "", { includeBlank = true } = {}) =>
 /* ------------------------------------------------------------------ */
 /* Document numbering (must be used inside a transaction)              */
 /* ------------------------------------------------------------------ */
-/** Read phase: returns a reservation to pass to commitNumber() after all other reads. */
+export function formatNumber(type, seq, { fy, site = "" }) {
+  const format = state.company.numberFormats?.[type] || NUMBER_FORMATS[type];
+  const pad = Number(state.company.numberPads?.[type]) || NUMBER_PAD[type] || 4;
+  return format.replace("{SEQ}", String(seq).padStart(pad, "0")).replace("{FY}", fy).replace("{SITE}", site || "HO");
+}
+const numberKey = (type, number) => `${type}__${number.replace(/[^A-Za-z0-9-]+/g, "_")}`;
+
+/**
+ * Read phase: returns a reservation to pass to commitNumber() after all other reads.
+ * Every issued number is registered in /docNumbers, so a number can never be issued twice —
+ * if the counter points at a number that already exists (e.g. it was set back by mistake),
+ * the next free number is used instead.
+ */
 export async function reserveNumber(tx, type, { date = isoDate(), site = "" } = {}) {
   const fy = financialYear(date);
   const ref = doc(db, "counters", `${type}_${fy}`);
   const snap = await tx.get(ref);
-  const next = snap.exists() ? Number(snap.data().next) || 1 : 1;
-  const format = state.company.numberFormats?.[type] || NUMBER_FORMATS[type];
-  const number = format.replace("{SEQ}", String(next).padStart(type === "PO" ? 3 : 4, "0")).replace("{FY}", fy).replace("{SITE}", site || "HO");
-  return { ref, next, number, fy, type };
+  let next = snap.exists() ? Number(snap.data().next) || 1 : 1;
+  for (let attempt = 0; attempt < 25; attempt += 1, next += 1) {
+    const number = formatNumber(type, next, { fy, site });
+    const keyRef = doc(db, "docNumbers", numberKey(type, number));
+    if (!(await tx.get(keyRef)).exists()) return { ref, keyRef, next, number, fy, type };
+  }
+  throw new Error(`Could not find a free ${type} number. Check the numbering in Settings.`);
 }
-export function commitNumber(tx, reservation) {
+export function commitNumber(tx, reservation, refId = "") {
   tx.set(reservation.ref, { next: reservation.next + 1, type: reservation.type, fy: reservation.fy, updatedAt: serverTimestamp() }, { merge: true });
+  tx.set(reservation.keyRef, { type: reservation.type, number: reservation.number, refId, at: serverTimestamp(), uid: state.user?.uid || "" });
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,10 +476,13 @@ export function logActivity(writer, { module, action, refNo = "", refId = "", su
 /* Shell                                                               */
 /* ------------------------------------------------------------------ */
 const NAV = [
-  { group: "Overview", items: [["dashboard", "dashboard.html", "fa-gauge-high", "Dashboard"]] },
+  { group: "Overview", items: [
+    ["dashboard", "dashboard.html", "fa-gauge-high", "Dashboard"],
+    ["exceptions", "exceptions.html", "fa-triangle-exclamation", "Exceptions"]
+  ] },
   { group: "Purchase", items: [
     ["po", "purchase-orders.html", "fa-file-invoice", "Purchase Orders"],
-    ["inward", "inward.html", "fa-truck-ramp-box", "Inward · Kanta · GRN"],
+    ["inward", "inward.html", "fa-truck-ramp-box", "Inward · GRN · Kanta"],
     ["parties", "parties.html", "fa-address-book", "Vendors & Customers"]
   ] },
   { group: "Sales", items: [
@@ -470,6 +498,7 @@ const NAV = [
   ] },
   { group: "Admin", items: [
     ["activity", "activity.html", "fa-clock-rotate-left", "Activity Log"],
+    ["access", "access.html", "fa-user-shield", "Access Audit", "superadmin"],
     ["settings", "settings.html", "fa-gear", "Settings & Users"]
   ] }
 ];
@@ -492,7 +521,7 @@ function renderShell(pageKey) {
     </header>
     <nav class="sidebar" id="sidebar">
       ${NAV.map((g) => `<div class="nav-group"><div class="nav-group-title">${g.group}</div>
-        ${g.items.map(([key, href, icon, label]) => `<a class="nav-link ${key === pageKey ? "active" : ""}" href="${href}"><i class="fa-solid ${icon}"></i><span>${label}</span></a>`).join("")}
+        ${g.items.filter(([, , , , only]) => only !== "superadmin" || isSuperAdmin()).map(([key, href, icon, label]) => `<a class="nav-link ${key === pageKey ? "active" : ""}" href="${href}"><i class="fa-solid ${icon}"></i><span>${label}</span></a>`).join("")}
       </div>`).join("")}
     </nav>
     <div class="overlay" id="overlay"></div>
@@ -502,11 +531,45 @@ function renderShell(pageKey) {
   const toggle = (open) => { sidebar.classList.toggle("open", open); overlay.classList.toggle("show", open); };
   document.getElementById("menuToggle").addEventListener("click", () => toggle(!sidebar.classList.contains("open")));
   overlay.addEventListener("click", () => toggle(false));
-  document.getElementById("logoutBtn").addEventListener("click", logout);
+  document.getElementById("logoutBtn").addEventListener("click", () => logout("logout"));
   return document.getElementById("page");
 }
 
-export async function logout() {
+/* ------------------------------------------------------------------ */
+/* Login sessions (for the private access audit)                        */
+/* ------------------------------------------------------------------ */
+const sessionKey = () => `ccpl-session-${state.user?.uid}`;
+function storedSessionId() { try { return localStorage.getItem(sessionKey()) || ""; } catch { return ""; } }
+
+/** Records a login session. Called at sign-in, and on page load if no session is known (e.g. "remember me"). */
+export async function startSession(user, profile, { resumed = false } = {}) {
+  const ref = doc(collection(db, "sessions"));
+  await setDoc(ref, {
+    uid: user.uid, email: user.email, userName: profile?.name || user.email,
+    loginAt: serverTimestamp(), lastActiveAt: serverTimestamp(), logoutAt: null, endReason: "",
+    resumed, userAgent: navigator.userAgent.slice(0, 180)
+  });
+  try { localStorage.setItem(`ccpl-session-${user.uid}`, ref.id); } catch { /* storage unavailable */ }
+  return ref.id;
+}
+
+let lastBeat = 0;
+async function heartbeat(force = false) {
+  const id = storedSessionId();
+  if (!id || (!force && Date.now() - lastBeat < 3 * 60 * 1000)) return;
+  lastBeat = Date.now();
+  try { await updateDoc(doc(db, "sessions", id), { lastActiveAt: serverTimestamp() }); } catch (error) { console.warn("Session heartbeat failed", error); }
+}
+
+async function endSession(reason) {
+  const id = storedSessionId();
+  if (!id) return;
+  try { await updateDoc(doc(db, "sessions", id), { logoutAt: serverTimestamp(), lastActiveAt: serverTimestamp(), endReason: reason }); } catch (error) { console.warn(error); }
+  try { localStorage.removeItem(sessionKey()); } catch { /* ignore */ }
+}
+
+export async function logout(reason = "logout") {
+  await endSession(typeof reason === "string" ? reason : "logout");
   await signOut(auth);
   window.location.replace("index.html");
 }
@@ -515,8 +578,12 @@ export async function logout() {
 const IDLE_LIMIT_MS = 60 * 60 * 1000;
 function startIdleTimer() {
   let timer;
-  const reset = () => { clearTimeout(timer); timer = setTimeout(() => { toast("Signed out after 60 minutes of inactivity."); logout(); }, IDLE_LIMIT_MS); };
-  ["click", "keydown", "mousemove", "touchstart", "scroll"].forEach((e) => window.addEventListener(e, reset, { passive: true }));
+  const reset = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { toast("Signed out after 60 minutes of inactivity."); logout("idle"); }, IDLE_LIMIT_MS);
+    heartbeat();
+  };
+  ["click", "keydown", "touchstart"].forEach((e) => window.addEventListener(e, reset, { passive: true }));
   reset();
 }
 
@@ -524,7 +591,7 @@ function startIdleTimer() {
  * Every protected page calls this first. Resolves once the user is verified
  * as an active ERP user; otherwise redirects to the login page.
  */
-export function initPage(pageKey, { permission = null } = {}) {
+export function initPage(pageKey, { permission = null, superAdminOnly = false } = {}) {
   document.body.innerHTML = '<div class="boot"><div><i class="fa-solid fa-spinner fa-spin"></i> Loading CCPL ERP…</div></div>';
   return new Promise((resolve) => {
     const stop = onAuthStateChanged(auth, async (user) => {
@@ -540,9 +607,11 @@ export function initPage(pageKey, { permission = null } = {}) {
         state.user = user;
         state.profile = profileSnap.data();
         await loadSettings();
+        if (!storedSessionId()) await startSession(user, state.profile, { resumed: true }).catch((e) => console.warn(e));
+        else heartbeat(true);
         const page = renderShell(pageKey);
         startIdleTimer();
-        if (permission && !can(permission)) {
+        if ((permission && !can(permission)) || (superAdminOnly && !isSuperAdmin())) {
           page.innerHTML = `<div class="notice error"><i class="fa-solid fa-lock"></i><div>Your role (<b>${esc(state.profile.role)}</b>) does not have access to this page. Please contact an administrator.</div></div>`;
           return;
         }
@@ -564,16 +633,34 @@ export function pageHeader(eyebrow, title, subtitle = "", actions = "") {
 /* ------------------------------------------------------------------ */
 /**
  * Derives the status of an order from its lines.
- * doneKey: "receivedQty" for POs, "dispatchedQty" for SOs.
+ * PO  (doneKey "receivedQty" = quantity inwarded after Kanta):
+ *     OPEN → PARTIALLY RECEIVED → AWAITING KANTA → PARTIALLY INWARDED → COMPLETED  (or CLOSED / CANCELLED)
+ * SO  (doneKey "dispatchedQty"): OPEN → PARTIALLY DISPATCHED → COMPLETED
  * A line is complete when done >= ordered × (1 − tolerance%).
  */
 export function deriveOrderStatus(order, doneKey, tolerancePct = 0) {
-  if (["CANCELLED", "SHORT CLOSED", "DRAFT"].includes(order.status)) return order.status;
+  if (["CANCELLED", "SHORT CLOSED", "CLOSED", "DRAFT"].includes(order.status)) return order.status;
   const lines = order.lines || [];
   const factor = 1 - (Number(tolerancePct) || 0) / 100;
-  const complete = lines.length > 0 && lines.every((l) => (Number(l[doneKey]) || 0) + 0.0005 >= (Number(l.qty) || 0) * factor);
+  const n = (v) => Number(v) || 0;
+  const complete = lines.length > 0 && lines.every((l) => n(l[doneKey]) + 0.0005 >= n(l.qty) * factor);
   if (complete) return "COMPLETED";
-  const started = lines.some((l) => (Number(l[doneKey]) || 0) > 0 || (Number(l.invoicedQty) || 0) > 0);
-  if (!started) return "OPEN";
-  return doneKey === "receivedQty" ? "PARTIALLY RECEIVED" : "PARTIALLY DISPATCHED";
+  if (doneKey !== "receivedQty") {
+    return lines.some((l) => n(l[doneKey]) > 0) ? "PARTIALLY DISPATCHED" : "OPEN";
+  }
+  if (lines.some((l) => n(l.pendingKantaQty) > 0.0005)) return "AWAITING KANTA";
+  if (lines.some((l) => n(l.receivedQty) > 0)) return "PARTIALLY INWARDED";
+  if (lines.some((l) => n(l.invoicedQty) > 0 || n(l.grnQty) > 0)) return "PARTIALLY RECEIVED";
+  return "OPEN";
+}
+
+export const OPEN_PO_STATUSES = ["OPEN", "PARTIALLY RECEIVED", "AWAITING KANTA", "PARTIALLY INWARDED"];
+
+/** Older single-item receipts are shown in the new multi-item shape. */
+export function normalizeReceipt(r) {
+  if (Array.isArray(r.lines)) return r;
+  const line = { poLineId: r.poLineId || "", itemId: r.item?.id, name: r.item?.name, unit: r.item?.unit, category: r.item?.category || "", hsn: r.item?.hsn || "", rate: 0, invoiceQty: Number(r.invoiceQty) || 0 };
+  if (r.kanta) line.kantaQty = Number(r.kanta.receivedQty) || 0;
+  if (r.grn) line.grnQty = Number(r.grn.acceptedQty) || 0;
+  return { ...r, lines: [line] };
 }

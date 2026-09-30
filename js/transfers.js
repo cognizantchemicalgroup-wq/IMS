@@ -107,7 +107,7 @@ async function start() {
           const movements = clean.map((l) => ({ warehouse: v.from, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: -l.qtySent, note: `Transfer to ${warehouseByCode(v.to).name}` }));
           const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
           const number = await reserveNumber(tx, "ST", { date: v.date });
-          commitNumber(tx, number);
+          commitNumber(tx, number, ref.id);
           applyMovements(tx, stockMap, movements, { type: "TRANSFER OUT", id: ref.id, no: number.number });
           tx.set(ref, { trNo: number.number, date: v.date, from: v.from, to: v.to, vehicleNo: v.vehicleNo.toUpperCase(), remarks: v.remarks, lines: clean, status: "IN TRANSIT", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
           logActivity(tx, { module: "Stock Transfer", action: "DISPATCH", refId: ref.id, refNo: number.number, summary: `${number.number}: ${warehouseByCode(v.from).name} → ${warehouseByCode(v.to).name}: ${clean.map((l) => `${qty(l.qtySent)} ${l.unit} ${l.name}`).join(", ")}` });

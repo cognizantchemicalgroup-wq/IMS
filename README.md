@@ -9,16 +9,18 @@ No build step: every page is a plain `.html` file with one script in `js/`.
 |---|---|---|
 | Sign in (email + password, only listed users) | `index.html` | `js/login.js` |
 | Dashboard | `dashboard.html` | `js/dashboard.js` |
-| Purchase Orders — create, PDF, track received vs ordered, short-close | `purchase-orders.html` | `js/purchase-orders.js` |
-| Inward → Kanta → GRN (invoice qty, weighbridge qty, shortage, accepted into stock) | `inward.html` | `js/inward.js` |
+| Exceptions — only what needs attention (overdue POs, GRN waiting for Kanta, Kanta short/excess, invoice ≠ payable, partial POs, manual stock entries) | `exceptions.html` | `js/exceptions.js`, `js/exceptions-data.js` |
+| Purchase Orders — create, PDF, item-wise PO / GRN / Kanta / Short-Excess / Inward / Pending / Payable, close | `purchase-orders.html` | `js/purchase-orders.js` |
+| Invoice → GRN → Kanta → stock inward (multi-item invoices; Kanta is final and payable) | `inward.html` | `js/inward.js` |
 | Vendors & Customers (one shared list) and Items & Packaging — Excel template, import (also accepts Zoho Books exports), export | `parties.html`, `items.html` | `js/masters.js` |
 | Quotations → Sales Orders | `quotations.html`, `sales-orders.html` | `js/sales-docs.js` |
 | Outward / Dispatch (deducts product **and** drums/carboys/bottles) + Delivery Challan PDF | `outward.html` | `js/outward.js` |
-| Stock by warehouse + item ledger | `inventory.html` | `js/inventory.js` |
+| Stock by warehouse + item ledger + **Add Existing / Opening Stock** | `inventory.html` | `js/inventory.js` |
 | Stock transfer between warehouses (in transit → received, transit loss) | `transfers.html` | `js/transfers.js` |
 | Write-off / adjustment (damaged, destroyed, count correction; admin can delete/reverse) | `adjustments.html` | `js/adjustments.js` |
 | Activity log (who did what, to the second; cannot be edited) | `activity.html` | `js/activity.js` |
-| Settings: company legal details, warehouses, numbering, users & roles | `settings.html` | `js/settings.js` |
+| Settings: company legal details, warehouses, number formats (e.g. CCPL/PO/26-27/001), users & roles | `settings.html` | `js/settings.js` |
+| Access Audit — logins, last active, logout, who did GRN / Kanta and GRN→Kanta time (**only rupesh.mudliar@cognizantchemical.com**) | `access.html` | `js/access.js` |
 
 Shared code: `js/core.js` (login guard, layout, GST maths, numbering, **stock engine**, activity log),
 `js/pdf.js` (PO / Quotation / SO / Challan PDF layout), `js/line-editor.js`, `js/uploads.js`, `css/app.css` (theme).
@@ -30,17 +32,23 @@ Warehouses: **PG-106, PG-153, Breeze, Taloja Unit** (edit addresses in Settings)
 
 ## How PO quantities are tracked
 
-Example: PO for 10 apples.
+Flow: **PO → Invoice / Receipt → GRN → Kanta → Stock inward → Payable quantity.**
+GRN records what physically arrived; **Kanta is the final truth** — only the Kanta quantity goes into stock and is payable.
+One invoice can carry several PO items, and a PO can receive any number of invoices until every item is complete.
 
-| Step | Invoice qty | Kanta qty | Shortage | Accepted (GRN) | PO received | PO status |
+| Item | PO Qty | GRN Qty | Kanta Qty | Short/Excess | Inward | Pending |
 |---|---|---|---|---|---|---|
-| Invoice 1 | 5 | 5 | 0 | 5 | 5 / 10 | PARTIALLY RECEIVED |
-| Invoice 2 | 5 | 4 | **1** | 4 | 9 / 10 | PARTIALLY RECEIVED |
-| Manager clicks **Mark complete (short close)** with a reason | | | | | 9 / 10 | SHORT CLOSED |
+| Apple | 10 kg | 5 kg | 5 kg | 0 | 5 kg | 5 kg |
+| Methanol | 20,000 kg | 10,000 kg | 9,970 kg | −30 kg | 9,970 kg | 10,030 kg |
 
-If both invoices had arrived in full, the PO would become **COMPLETED** automatically. A PO also completes
-automatically when it is within the **0.5 % tolerance** (e.g. a 10,000 KG tanker PO completes at 9,950 KG or more);
-change the % in Settings.
+PO statuses: **Open → Partially Received** (invoice entered) **→ Awaiting Kanta** (GRN done) **→ Partially Inwarded → Completed**,
+or **Closed** (manager closes a PO that will not be fully supplied, with a reason) / **Cancelled**.
+A PO completes automatically within the tolerance in Settings (default 0.5 %).
+
+Document numbers are issued automatically from the format set in Settings and are **never repeated** — every issued number
+is registered, so if a counter is set back by mistake the system skips to the next free number.
+
+PDFs carry "System Generated Document — No Signature Required." instead of a signature box.
 
 ## First-time setup (live Firebase project `ccpl-ims`)
 
@@ -79,7 +87,7 @@ npm install
 npx playwright install chromium
 npm test
 ```
-It runs 51 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
+It runs 64 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
 short close, auto-complete, 0.5 % tanker tolerance, IGST, transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO →
 dispatch with drum deduction, stock ledger, activity log, and that operators/outsiders are blocked by the rules.
 PDFs and screenshots are written to `tests/output/`.

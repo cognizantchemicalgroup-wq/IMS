@@ -252,7 +252,7 @@ async function start() {
           ];
           const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
           const number = await reserveNumber(tx, "DC", { date: v.date });
-          commitNumber(tx, number);
+          commitNumber(tx, number, ref.id);
           applyMovements(tx, stockMap, movements, { type: "OUTWARD", id: ref.id, no: number.number });
           tx.set(ref, {
             dcNo: number.number, date: v.date, status: "POSTED", soId: s?.id || "", soNo: s?.soNo || "",

@@ -161,7 +161,7 @@ export async function startSalesPage(kind) {
             if (q.status !== "ACCEPTED") throw new Error("Only an accepted quotation can be converted.");
           }
           const number = await reserveNumber(tx, kind, { date: v.date });
-          commitNumber(tx, number);
+          commitNumber(tx, number, ref.id);
           tx.set(ref, { ...data, [cfg.noKey]: number.number, status: isQ ? "DRAFT" : "OPEN", revision: 0, ...(isQ ? {} : { quotationId: soFromQ ? fromQuotation.id : "", quoteNo: soFromQ ? fromQuotation.quoteNo : "" }), createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
           if (qRef) {
             tx.update(qRef, { status: "CONVERTED", soId: ref.id, soNo: number.number, updatedAt: serverTimestamp() });
