@@ -86,6 +86,11 @@ service cloud.firestore {
       allow create, update: if isManager();
       allow delete: if isAdmin();
     }
+    match /proformaInvoices/{id} {
+      allow read: if active();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
     match /salesOrders/{id} {
       allow read: if active();
       allow create: if isManager();

@@ -510,6 +510,52 @@ try {
   }
   check(true, "quotation and sales order PDFs generated");
 
+  /* ================= 10b. Proforma Invoice from a Sales Order ================= */
+  console.log("\n10b. Proforma Invoice (IGST, from SO)");
+  await goto("sales-orders.html"); await page.click("#newDoc");
+  m = modal();
+  await selectContaining(m.locator("select[name=customerId]"), "Gujarat Acids");
+  await m.locator("input[name=customerPoNo]").fill("GA/PO/77");
+  await m.locator("input[name=customerPoDate]").fill("2026-09-25");
+  await m.locator("select[name=warehouse]").selectOption("PG-106");
+  await selectContaining(m.locator("select[data-f=itemId]").first(), "Methanol");
+  await m.locator("input[data-f=qty]").first().fill("3000");
+  await m.locator("input[data-f=rate]").first().fill("62");
+  await m.locator("#saveS").click();
+  await expectToast();
+  const gaSo = await one("salesOrders", "customerPoNo", "GA/PO/77");
+  await goto("sales-orders.html");
+  await page.locator(`[data-view="${gaSo.id}"]`).first().click();
+  await modal().locator('[data-act="proforma"]').click();
+  await page.waitForURL(/proforma\.html/);
+  m = modal();
+  await m.locator("#savePi").waitFor();
+  check(await m.locator("input[name=refNo]").inputValue() === "GA/PO/77" && await m.locator("input[name=termsDays]").inputValue() === "45"
+    && (await m.locator("input[name=dispatchFrom]").inputValue()).includes("PATALGANGA"), "PI pre-filled from SO: reference, 45-day terms, dispatch from PG-106 (Patalganga)");
+  await m.locator("input[name=dispatchThrough]").fill("Tanker");
+  await m.locator("input[name=destination]").fill("DAHEJ");
+  await m.locator("#savePi").click();
+  await expectToast();
+  let pi = await one("proformaInvoices", "soId", gaSo.id);
+  check(pi?.piNo === "CCPL/PI/26-27/001" && pi.status === "ISSUED" && pi.soNo === gaSo.soNo, `proforma invoice ${pi?.piNo} issued against ${gaSo.soNo}`);
+  check(pi.totals.taxes.length === 1 && pi.totals.taxes[0].kind === "IGST" && near(pi.totals.taxes[0].amount, 33480) && near(pi.totals.total, 219480), "Methanol 3,000 @ 62 to Gujarat → IGST 33,480 · total Rs.219,480 (same as Troikaa PI)");
+  check(pi.dueDate === new Date(Date.parse(`${pi.date}T00:00:00Z`) + 45 * 86400000).toISOString().slice(0, 10), "due date = invoice date + 45 days");
+  await goto("proforma.html");
+  await page.locator(`[data-pdf="${pi.id}"]`).click();
+  await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
+  const [piDl] = await Promise.all([page.waitForEvent("download"), page.click("#pdfDownload")]);
+  const piPdf = path.join(OUT, piDl.suggestedFilename());
+  await piDl.saveAs(piPdf);
+  await closeAllModals();
+  check((await readFile(piPdf)).subarray(0, 5).toString() === "%PDF-", "proforma invoice PDF downloaded");
+  await page.locator(`[data-view="${pi.id}"]`).first().click();
+  await modal().locator('[data-act="PAID"]').click();
+  await page.locator("#confirmInput").fill("UTR ICIC123456");
+  await page.click("#confirmOk");
+  await expectToast();
+  pi = await one("proformaInvoices", "soId", gaSo.id);
+  check(pi.status === "PAID" && pi.statusNote.includes("UTR"), "PI marked paid with payment reference");
+
   /* ================= 11. Ledger & activity log ================= */
   console.log("\n11. Stock ledger & activity log");
   const ledger = (await adb.collection("stockLedger").get()).docs.map((d) => d.data());
@@ -591,6 +637,7 @@ try {
     const results = {};
     const tryIt = async (name, fn) => { try { await fn(); results[name] = "allowed"; } catch (e) { results[name] = e.code; } };
     await tryIt("createPo", () => fs.addDoc(fs.collection(db, "purchaseOrders"), { status: "OPEN", poNo: "HACK" }));
+    await tryIt("createPi", () => fs.addDoc(fs.collection(db, "proformaInvoices"), { status: "ISSUED", piNo: "HACK" }));
     const act = await fs.getDocs(fs.query(fs.collection(db, "activity"), fs.limit(1)));
     await tryIt("editActivity", () => fs.updateDoc(act.docs[0].ref, { summary: "tampered" }));
     await tryIt("deleteActivity", () => fs.deleteDoc(act.docs[0].ref));

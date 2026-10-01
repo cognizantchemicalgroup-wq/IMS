@@ -52,7 +52,8 @@ if (!(await company.get()).exists) {
     name: "Cognizant Chemical Pvt. Ltd.",
     addressLines: ["Office No. 120 DISMA Complex,", "Plot No 246, Kalamboli Panvel,", "Raigad Maharashtra 410218 India"],
     state: "Maharashtra", stateCode: "27", gstin: "27AAGCC5829E1ZN", pan: "AAGCC5829E",
-    email: "admin@cognizantchemical.com", phone: "9619662255", poTolerancePct: 0.5
+    email: "admin@cognizantchemical.com", phone: "9619662255", poTolerancePct: 0.5,
+    bankHolder: "COGNIZANT CHEMICAL PVT LTD", bankName: "ICICI BANK", bankAccount: "484105000428", bankIfsc: "ICIC0004841", bankBranch: "SEC - 3, KARANJADE"
   });
   console.log("seeded   company details");
 }

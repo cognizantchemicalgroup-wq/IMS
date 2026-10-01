@@ -14,6 +14,7 @@ No build step: every page is a plain `.html` file with one script in `js/`.
 | Invoice → GRN → Kanta → stock inward (multi-item invoices; Kanta is final and payable) | `inward.html` | `js/inward.js` |
 | Vendors & Customers (one shared list) and Items & Packaging — Excel template, import (also accepts Zoho Books exports), export | `parties.html`, `items.html` | `js/masters.js` |
 | Quotations → Sales Orders | `quotations.html`, `sales-orders.html` | `js/sales-docs.js` |
+| Proforma Invoices — standalone or from a Sales Order; IGST/CGST+SGST, terms → due date, HSN summary, bank details, Balance Due; mark paid / cancel | `proforma.html` | `js/proforma.js` |
 | Outward / Dispatch (deducts product **and** drums/carboys/bottles) + Delivery Challan PDF | `outward.html` | `js/outward.js` |
 | Stock by warehouse + item ledger + **Add Existing / Opening Stock** | `inventory.html` | `js/inventory.js` |
 | Stock transfer between warehouses (in transit → received, transit loss) | `transfers.html` | `js/transfers.js` |
@@ -23,7 +24,7 @@ No build step: every page is a plain `.html` file with one script in `js/`.
 | Access Audit — logins, last active, logout, who did GRN / Kanta and GRN→Kanta time (**only rupesh.mudliar@cognizantchemical.com**) | `access.html` | `js/access.js` |
 
 Shared code: `js/core.js` (login guard, layout, GST maths, numbering, **stock engine**, activity log),
-`js/pdf.js` (PO / Quotation / SO / Challan PDF layout), `js/line-editor.js`, `js/uploads.js`, `css/app.css` (theme).
+`js/pdf.js` (PO / Quotation / SO / Proforma Invoice / Challan PDF layout), `js/line-editor.js`, `js/uploads.js`, `css/app.css` (theme).
 
 Security: `firestore.rules` and `storage.rules`. Nobody can read or write anything unless they are signed in
 **and** have an active profile in `users/{uid}`. The activity log and stock ledger cannot be edited or deleted by anyone.
@@ -68,7 +69,7 @@ PDFs carry "System Generated Document — No Signature Required." instead of a s
    the PR by the Vercel bot) and merging into `main` updates the live site. `vercel.json` / `.vercelignore` keep the
    admin scripts and tests off the public site.
 7. Sign in → Settings: set the next PO number (e.g. 824 to continue after CCPL/PG/823/26-27), fill Breeze and Taloja
-   addresses and bank details.
+   addresses; check the bank details printed on quotations / proforma invoices.
 
 After that, add or deactivate users from **Settings → Users** (admin only).
 
@@ -87,9 +88,9 @@ npm install
 npx playwright install chromium
 npm test
 ```
-It runs 64 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
+It runs 70 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
 short close, auto-complete, 0.5 % tanker tolerance, IGST, transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO →
-dispatch with drum deduction, stock ledger, activity log, and that operators/outsiders are blocked by the rules.
+dispatch with drum deduction, proforma invoice from a sales order (IGST, due date, PDF, mark paid), stock ledger, activity log, and that operators/outsiders are blocked by the rules.
 PDFs and screenshots are written to `tests/output/`.
 
 ### Manual test without touching live data

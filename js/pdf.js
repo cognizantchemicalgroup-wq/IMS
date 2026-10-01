@@ -47,7 +47,7 @@ function metaTable(rows) {
   };
 }
 
-function totalsTable(totals) {
+function totalsTable(totals, balanceDue = null) {
   const body = [[{ text: "Sub Total", color: C.muted }, { text: money(totals.subTotal), alignment: "right" }]];
   totals.taxes.forEach((t) => body.push([{ text: t.label, color: C.muted }, { text: money(t.amount), alignment: "right" }]));
   if (totals.roundOff) body.push([{ text: "Round Off", color: C.muted }, { text: money(totals.roundOff), alignment: "right" }]);
@@ -55,6 +55,7 @@ function totalsTable(totals) {
     { text: "Total", bold: true, color: "#ffffff", fillColor: C.brand, fontSize: 11, margin: [4, 3, 0, 3] },
     { text: `Rs.${money(totals.total)}`, bold: true, color: "#ffffff", fillColor: C.brand, fontSize: 11, alignment: "right", margin: [0, 3, 4, 3] }
   ]);
+  if (balanceDue !== null) body.push([{ text: "Balance Due", bold: true, color: C.ink, margin: [4, 3, 0, 3] }, { text: `Rs.${money(balanceDue)}`, bold: true, color: C.ink, alignment: "right", margin: [0, 3, 4, 3] }]);
   return { table: { widths: ["*", 110], body }, layout: { hLineWidth: () => 0, vLineWidth: () => 0, paddingTop: () => 3, paddingBottom: () => 3 } };
 }
 
@@ -89,6 +90,7 @@ async function buildDoc(spec) {
   })];
 
   const leftBottom = [];
+  if (spec.itemsInTotal) leftBottom.push({ text: `Items in Total ${qty(spec.itemsInTotal, 3)}`, color: C.ink, margin: [0, 0, 0, 6] });
   if (spec.totals) leftBottom.push({ text: "Total In Words", color: C.muted, fontSize: 8 }, { text: amountInWords(spec.totals.total), bold: true, italics: true, color: C.ink, margin: [0, 1, 0, 8] });
   if (spec.notes) leftBottom.push({ text: "Notes", bold: true, color: C.ink, margin: [0, 0, 0, 2] }, { text: spec.notes, margin: [0, 0, 0, 8] });
   if (spec.terms) {
@@ -96,11 +98,17 @@ async function buildDoc(spec) {
     leftBottom.push({ ol: spec.terms.split("\n").map((t) => t.trim()).filter(Boolean), fontSize: 7.8, color: "#3b3a52" });
   }
   if (spec.bank && company.bankAccount) {
-    leftBottom.push({ text: "Bank Details", bold: true, color: C.ink, margin: [0, 8, 0, 2] }, { text: `${company.bankName || ""}  A/c ${company.bankAccount}  IFSC ${company.bankIfsc || ""}${company.bankBranch ? `  Branch ${company.bankBranch}` : ""}`, fontSize: 8 });
+    leftBottom.push({ text: "Bank Details", bold: true, color: C.ink, margin: [0, 8, 0, 2] }, {
+      table: { widths: [92, "*"], body: [
+        ["A/c Holder's Name", company.bankHolder || company.name], ["Bank Name", company.bankName || ""], ["A/c No.", company.bankAccount],
+        ["Branch & IFSC", [company.bankBranch, company.bankIfsc].filter(Boolean).join(" & ")]
+      ].map(([l, v]) => [{ text: l, color: C.muted, fontSize: 8 }, { text: `: ${v}`, bold: true, fontSize: 8, color: C.ink }]) },
+      layout: "noBorders"
+    });
   }
 
   const rightBottom = [];
-  if (spec.totals) rightBottom.push(totalsTable(spec.totals));
+  if (spec.totals) rightBottom.push(totalsTable(spec.totals, spec.balanceDue ?? null));
   rightBottom.push({
     table: { widths: ["*"], body: [[{
       stack: [
@@ -139,6 +147,7 @@ async function buildDoc(spec) {
           { stack: [
             { text: spec.title.toUpperCase(), fontSize: spec.title.length > 14 ? 16 : 19, color: C.brand, bold: true, alignment: "right", characterSpacing: 1.1 },
             { text: spec.number, alignment: "right", color: C.ink, bold: true, fontSize: 10, margin: [0, 4, 0, 0] },
+            ...(spec.copyLabel ? [{ text: spec.copyLabel, alignment: "right", color: C.muted, fontSize: 7.5, characterSpacing: 1, margin: [0, 3, 0, 0] }] : []),
             ...(spec.status ? [{ text: spec.status, alignment: "right", color: C.gold, bold: true, fontSize: 8.5, margin: [0, 2, 0, 0] }] : [])
           ], width: 215 }
         ]
@@ -157,8 +166,42 @@ async function buildDoc(spec) {
         margin: [0, 8, 0, 8]
       },
       { table: { headerRows: 1, widths, body, dontBreakRows: true }, layout: { hLineWidth: (i, node) => (i === 0 || i === 1 || i === node.table.body.length ? 0.8 : 0.3), vLineWidth: () => 0, hLineColor: () => C.line, paddingLeft: () => 5, paddingRight: () => 5 } },
-      { columns: [{ stack: leftBottom, width: "*", margin: [0, 12, 16, 0] }, { stack: rightBottom, width: 240, margin: [0, 8, 0, 0] }], unbreakable: false }
+      { columns: [{ stack: leftBottom, width: "*", margin: [0, 12, 16, 0] }, { stack: rightBottom, width: 240, margin: [0, 8, 0, 0] }], unbreakable: false },
+      ...(spec.hsnSummary ? [hsnSummaryTable(spec.totals, spec.intraState)] : [])
     ]
+  };
+}
+
+/** HSN/SAC-wise tax summary (as on GST invoices). */
+function hsnSummaryTable(totals, intraState) {
+  const groups = new Map();
+  totals.lines.forEach((l) => {
+    const key = `${l.hsn || "—"}|${Number(l.gstRate) || 0}`;
+    const g = groups.get(key) || { hsn: l.hsn || "—", rate: Number(l.gstRate) || 0, taxable: 0 };
+    g.taxable += Number(l.amount) || 0;
+    groups.set(key, g);
+  });
+  const rows = [...groups.values()].map((g) => ({ ...g, tax: Math.round(g.taxable * g.rate) / 100 }));
+  const th = (text, extra = {}) => ({ text, bold: true, color: C.ink, fillColor: C.soft, fontSize: 8, ...extra });
+  const head = intraState
+    ? [[th("HSN/SAC", { rowSpan: 2 }), th("Taxable Amount", { rowSpan: 2, alignment: "right" }), th("CGST", { colSpan: 2, alignment: "center" }), {}, th("SGST", { colSpan: 2, alignment: "center" }), {}, th("Total Tax Amount", { rowSpan: 2, alignment: "right" })],
+      [{}, {}, th("Rate", { alignment: "right" }), th("Amount", { alignment: "right" }), th("Rate", { alignment: "right" }), th("Amount", { alignment: "right" }), {}]]
+    : [[th("HSN/SAC", { rowSpan: 2 }), th("Taxable Amount", { rowSpan: 2, alignment: "right" }), th("IGST", { colSpan: 2, alignment: "center" }), {}, th("Total Tax Amount", { rowSpan: 2, alignment: "right" })],
+      [{}, {}, th("Rate", { alignment: "right" }), th("Amount", { alignment: "right" }), {}]];
+  const r = (t, bold = false) => ({ text: t, alignment: "right", fontSize: 8, bold });
+  const body = rows.map((g) => (intraState
+    ? [{ text: g.hsn, fontSize: 8 }, r(money(g.taxable)), r(`${g.rate / 2}%`), r(money(g.tax / 2)), r(`${g.rate / 2}%`), r(money(g.tax / 2)), r(money(g.tax))]
+    : [{ text: g.hsn, fontSize: 8 }, r(money(g.taxable)), r(`${g.rate}%`), r(money(g.tax)), r(money(g.tax))]));
+  const sum = (k) => rows.reduce((s, g) => s + g[k], 0);
+  body.push(intraState
+    ? [{ text: "Total", bold: true, fontSize: 8 }, r(money(sum("taxable")), true), r(""), r(money(sum("tax") / 2), true), r(""), r(money(sum("tax") / 2), true), r(money(sum("tax")), true)]
+    : [{ text: "Total", bold: true, fontSize: 8 }, r(money(sum("taxable")), true), r(""), r(money(sum("tax")), true), r(money(sum("tax")), true)]);
+  return {
+    stack: [
+      { text: "HSN/SAC Summary", bold: true, color: C.ink, margin: [0, 16, 0, 4] },
+      { table: { headerRows: 2, widths: intraState ? ["*", 80, 36, 62, 36, 62, 70] : ["*", 100, 50, 80, 90], body: [...head, ...body] }, layout: hairline }
+    ],
+    unbreakable: true
   };
 }
 
@@ -227,6 +270,33 @@ export function soSpec(so) {
     totals: so.totals,
     notes: so.notes,
     terms: so.terms,
+    bank: true
+  };
+}
+
+export function piSpec(pi) {
+  return {
+    title: "Proforma Invoice",
+    number: pi.piNo,
+    copyLabel: "ORIGINAL",
+    status: pi.status === "CANCELLED" ? "CANCELLED" : "",
+    meta: [
+      ["Invoice number", pi.piNo], ["Invoice Date", fmtDate(pi.date)], ["Terms", pi.termsDays ? `${pi.termsDays} Days` : pi.paymentTerms], ["Due Date", fmtDate(pi.dueDate)],
+      ["Reference no. & Date", [pi.refNo, pi.refDate ? fmtDate(pi.refDate) : ""].filter(Boolean).join("  ")],
+      ["Place Of Supply", pi.placeOfSupply], ["Dispatched Through", pi.dispatchThrough], ["Dispatch Doc No", pi.dispatchDocNo || pi.piNo], ["Destination", pi.destination], ["Dispatch From", pi.dispatchFrom]
+    ],
+    leftTitle: "Bill To",
+    left: pi.customer,
+    rightTitle: "Ship To",
+    right: pi.shipTo?.addressLines?.length ? pi.shipTo : { ...pi.customer, name: "" },
+    lines: pi.totals.lines,
+    totals: pi.totals,
+    balanceDue: pi.totals.total,
+    itemsInTotal: pi.totals.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0),
+    hsnSummary: true,
+    intraState: pi.intraState,
+    notes: pi.notes,
+    terms: pi.terms,
     bank: true
   };
 }

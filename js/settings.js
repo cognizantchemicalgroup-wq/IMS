@@ -45,6 +45,7 @@ async function start() {
         <label class="field"><span>State code</span><input name="stateCode" value="${esc(c.stateCode)}" /></label>
         <label class="field"><span>Email</span><input name="email" value="${esc(c.email)}" /></label>
         <label class="field"><span>Phone</span><input name="phone" value="${esc(c.phone)}" /></label>
+        <label class="field"><span>A/c holder's name</span><input name="bankHolder" value="${esc(c.bankHolder)}" /></label>
         <label class="field"><span>Bank name</span><input name="bankName" value="${esc(c.bankName)}" /></label>
         <label class="field"><span>Bank A/c no.</span><input name="bankAccount" value="${esc(c.bankAccount)}" /></label>
         <label class="field"><span>IFSC</span><input name="bankIfsc" value="${esc(c.bankIfsc)}" /></label>
@@ -54,6 +55,7 @@ async function start() {
         <label class="field span-all"><span>Default PO terms & conditions</span><textarea name="poTerms" rows="6">${esc(c.poTerms)}</textarea></label>
         <label class="field span-2"><span>Default quotation terms</span><textarea name="quoteTerms" rows="5">${esc(c.quoteTerms)}</textarea></label>
         <label class="field span-2"><span>Default sales order terms</span><textarea name="soTerms" rows="5">${esc(c.soTerms)}</textarea></label>
+        <label class="field span-2"><span>Default proforma invoice terms</span><textarea name="piTerms" rows="5">${esc(c.piTerms)}</textarea></label>
         <div class="span-all" style="display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Save company details</button></div>
       </form></div></div>
     <div class="card"><div class="card-head"><h3>Warehouses / units</h3><button class="btn sm" id="addWh"><i class="fa-solid fa-plus"></i> Add warehouse</button></div>

@@ -199,6 +199,7 @@ export async function startSalesPage(kind) {
       if (untouched) buttons.push('<button class="btn" data-act="edit"><i class="fa-solid fa-pen"></i> Edit</button>', '<button class="btn danger" data-act="CANCELLED">Cancel SO</button>');
       if (can("close") && ["OPEN", "PARTIALLY DISPATCHED"].includes(st) && !untouched) buttons.push('<button class="btn gold" data-act="SHORT CLOSED"><i class="fa-solid fa-flag-checkered"></i> Mark complete (short close)</button>');
       if (isAdmin() && st === "SHORT CLOSED") buttons.push('<button class="btn" data-act="reopen">Reopen</button>');
+      if (["OPEN", "PARTIALLY DISPATCHED"].includes(st)) buttons.push('<button class="btn" data-act="proforma"><i class="fa-solid fa-file-invoice-dollar"></i> Create Proforma Invoice</button>');
     }
     const modal = openModal({
       title: `${d[cfg.noKey]}${d.revision ? ` · Rev ${d.revision}` : ""}`,
@@ -219,6 +220,7 @@ export async function startSalesPage(kind) {
       if (act === "pdf") { showDocument(cfg.spec(d), `${safeFileName(d[cfg.noKey])}.pdf`); return; }
       if (act === "edit") { modal.close(); openEditor(d); return; }
       if (act === "convert") { startConvert(d); return; }
+      if (act === "proforma") { sessionStorage.setItem("ccpl-pi-from-so", d.id); window.location.href = "proforma.html"; return; }
       const needsReason = ["REJECTED", "CANCELLED", "SHORT CLOSED"].includes(act);
       let reason = "";
       if (act === "reopen") { if (!(await confirmDialog(`Reopen ${d[cfg.noKey]}?`))) return; }

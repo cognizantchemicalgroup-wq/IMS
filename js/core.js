@@ -21,10 +21,11 @@ export const DEFAULT_COMPANY = {
   email: "admin@cognizantchemical.com",
   phone: "9619662255",
   website: "",
-  bankName: "",
-  bankAccount: "",
-  bankIfsc: "",
-  bankBranch: "",
+  bankHolder: "COGNIZANT CHEMICAL PVT LTD",
+  bankName: "ICICI BANK",
+  bankAccount: "484105000428",
+  bankIfsc: "ICIC0004841",
+  bankBranch: "SEC - 3, KARANJADE",
   poTerms: [
     "Please quote our Purchase Order number on all invoices, delivery challans and correspondence.",
     "Material must conform to the agreed specification; a Certificate of Analysis (COA) must accompany every consignment.",
@@ -40,6 +41,11 @@ export const DEFAULT_COMPANY = {
     "Subject to Raigad jurisdiction."
   ].join("\n"),
   soTerms: "Subject to Raigad jurisdiction.",
+  piTerms: [
+    "Payment to be made in favour of the bank account shown above.",
+    "Goods will be dispatched on receipt of payment / as per agreed terms.",
+    "Subject to Raigad jurisdiction."
+  ].join("\n"),
   poTolerancePct: 0.5,
   poOverdueDays: 15
 };
@@ -63,10 +69,11 @@ export const NUMBER_FORMATS = {
   DC: "CCPL/DC/{FY}/{SEQ}",
   ST: "ST/{FY}/{SEQ}",
   ADJ: "ADJ/{FY}/{SEQ}",
-  OS: "OS/{FY}/{SEQ}"
+  OS: "OS/{FY}/{SEQ}",
+  PI: "CCPL/PI/{FY}/{SEQ}"
 };
-export const NUMBER_PAD = { PO: 3, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4 };
-export const NUMBER_LABELS = { PO: "Purchase Order", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock" };
+export const NUMBER_PAD = { PO: 3, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4, PI: 3 };
+export const NUMBER_LABELS = { PO: "Purchase Order", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock", PI: "Proforma Invoice" };
 
 /** The only account that sees the private access / session audit page. */
 export const SUPER_ADMIN_EMAIL = "rupesh.mudliar@cognizantchemical.com";
@@ -273,7 +280,8 @@ export function badge(status) {
     DRAFT: "gray", OPEN: "blue", "PARTIALLY RECEIVED": "amber", "AWAITING KANTA": "amber", "PARTIALLY INWARDED": "indigo", COMPLETED: "green", CLOSED: "gold", "SHORT CLOSED": "gold", CANCELLED: "red",
     SENT: "blue", ACCEPTED: "green", REJECTED: "red", CONVERTED: "indigo", EXPIRED: "gray",
     "PARTIALLY DISPATCHED": "amber", "KANTA PENDING": "amber", "GRN PENDING": "blue", "IN TRANSIT": "amber", RECEIVED: "green",
-    POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray"
+    POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray",
+    ISSUED: "blue", PAID: "green", OVERDUE: "red"
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;
 }
@@ -348,7 +356,11 @@ export async function loadSettings() {
     getDoc(doc(db, "settings", "company")),
     getDocs(collection(db, "warehouses"))
   ]);
-  if (companySnap.exists()) state.company = { ...DEFAULT_COMPANY, ...companySnap.data() };
+  if (companySnap.exists()) {
+    const saved = companySnap.data();
+    // Empty fields saved from Settings fall back to the defaults (e.g. bank details).
+    state.company = { ...DEFAULT_COMPANY, ...Object.fromEntries(Object.entries(saved).filter(([k, v]) => !(k.startsWith("bank") && v === ""))) };
+  }
   if (!warehouseSnap.empty) {
     state.warehouses = warehouseSnap.docs.map((d) => ({ ...d.data(), code: d.id }))
       .sort((a, b) => (a.sort ?? 99) - (b.sort ?? 99) || a.name.localeCompare(b.name));
@@ -488,6 +500,7 @@ const NAV = [
   { group: "Sales", items: [
     ["quotations", "quotations.html", "fa-file-signature", "Quotations"],
     ["so", "sales-orders.html", "fa-file-contract", "Sales Orders"],
+    ["pi", "proforma.html", "fa-file-invoice-dollar", "Proforma Invoices"],
     ["outward", "outward.html", "fa-truck-fast", "Outward / Dispatch"]
   ] },
   { group: "Inventory", items: [
