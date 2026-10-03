@@ -1,263 +1,61 @@
-import { db } from "./firebase-config.js";
 import {
-  collection,
-  onSnapshot
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  db, initPage, pageHeader, esc, listCollection, money, qty, fmtDate, fmtDateTime, isoDate, round, warehouseByCode, activeWarehouses, state,
+  OPEN_PO_STATUSES
+} from "./core.js";
+import { computeExceptions } from "./exceptions-data.js";
+import { collection, getDocs, limit, orderBy, query } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-const state = {
-  inward: [],
-  kanta: [],
-  grn: [],
-  stock: [],
-  outward: [],
-  filters: {
-    search: "",
-    status: "",
-    location: "",
-    date: ""
-  }
-};
+const page = await initPage("dashboard");
+if (page) start();
 
-const elements = {
-  totalInward: document.getElementById("totalInward"),
-  pendingKanta: document.getElementById("pendingKanta"),
-  pendingGrn: document.getElementById("pendingGrn"),
-  totalStock: document.getElementById("totalStock"),
-  recentBody: document.getElementById("recentInwardBody"),
-  recentCount: document.getElementById("recentInwardCount"),
-  finalizedBody: document.getElementById("finalizedBody"),
-  finalizedCount: document.getElementById("finalizedCount"),
-  stockBody: document.getElementById("stockBody"),
-  stockCount: document.getElementById("stockCount"),
-  pendingKantaCount: document.getElementById("pendingKantaCount"),
-  pendingGrnCount: document.getElementById("pendingGrnCount"),
-  pendingDocumentsCount: document.getElementById("pendingDocumentsCount"),
-  search: document.getElementById("dashboardSearch"),
-  status: document.getElementById("statusFilter"),
-  location: document.getElementById("locationFilter"),
-  date: document.getElementById("dateFilter")
-};
+async function start() {
+  const header = pageHeader("Overview", `Welcome, ${state.profile.name || state.user.email}`, new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }));
+  page.innerHTML = `${header}<div class="boot" style="min-height:30vh"><div><i class="fa-solid fa-spinner fa-spin"></i> Loading…</div></div>`;
+  const [pos, receipts, sos, transfers, stock, adjustments, actSnap] = await Promise.all([
+    listCollection("purchaseOrders"), listCollection("receipts"), listCollection("salesOrders"), listCollection("transfers"),
+    listCollection("inventory"), listCollection("adjustments"),
+    getDocs(query(collection(db, "activity"), orderBy("at", "desc"), limit(25)))
+  ]);
+  const activity = actSnap.docs.map((d) => d.data());
+  const openPos = pos.filter((p) => OPEN_PO_STATUSES.includes(p.status));
+  const grnPending = receipts.filter((r) => r.stage === "GRN PENDING");
+  const kantaPending = receipts.filter((r) => r.stage === "KANTA PENDING");
+  const openSos = sos.filter((s) => ["OPEN", "PARTIALLY DISPATCHED"].includes(s.status));
+  const inTransit = transfers.filter((t) => t.status === "IN TRANSIT");
+  const pendingPoValue = openPos.reduce((sum, p) => sum + p.lines.reduce((s, l) => s + Math.max(0, l.qty - (l.receivedQty || 0)) * l.rate, 0), 0);
+  const today = isoDate();
+  const pendingLines = openPos.flatMap((p) => p.lines.filter((l) => l.qty - (l.receivedQty || 0) > 0.0005).map((l) => ({ p, l, overdue: p.expectedDate && p.expectedDate < today })))
+    .sort((a, b) => (a.p.expectedDate || "9").localeCompare(b.p.expectedDate || "9")).slice(0, 10);
+  const exceptions = computeExceptions({ pos, receipts, adjustments, company: state.company });
+  const exceptionTotal = exceptions.reduce((s, g) => s + g.rows.length, 0);
 
-const dashboardStatus = document.getElementById("dashboardStatus");
-
-function escapeHTML(value) {
-  return String(value ?? "—")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  const kpi = (icon, label, value, hint, href) => `<a class="card kpi" href="${href}" style="color:inherit"><div class="label"><i class="fa-solid ${icon}"></i>${label}</div><div class="value">${value}</div><div class="hint">${hint}</div></a>`;
+  page.innerHTML = `${header}
+    <div class="grid cols-4">
+      ${kpi("fa-file-invoice", "Open purchase orders", openPos.length, `₹${money(pendingPoValue)} still to be inwarded`, "purchase-orders.html")}
+      ${kpi("fa-scale-balanced", "Awaiting GRN / Kanta", `${grnPending.length} / ${kantaPending.length}`, "stock is added only after Kanta", "inward.html")}
+      ${kpi("fa-file-contract", "Open sales orders", openSos.length, "awaiting dispatch", "sales-orders.html")}
+      ${kpi("fa-triangle-exclamation", "Exceptions", exceptionTotal, exceptionTotal ? "need attention" : "all clear", "exceptions.html")}
+    </div>
+    <div class="card" style="margin-top:16px"><div class="card-head"><h3><i class="fa-solid fa-triangle-exclamation"></i> Needs attention</h3><a href="exceptions.html" class="small">Open Exceptions →</a></div>
+      <div class="card-body" style="display:flex;flex-wrap:wrap;gap:8px">${exceptions.map((g) => `<a href="exceptions.html#${g.key}" class="badge ${g.rows.length ? g.tone : "green"}" style="font-size:12px;padding:6px 12px">${esc(g.title)}: ${g.rows.length}</a>`).join("")}</div></div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><div class="card-head"><h3>Material pending against POs</h3><a href="purchase-orders.html" class="small">All POs →</a></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>PO</th><th>Vendor</th><th>Item</th><th class="num">Pending</th><th>Expected</th></tr></thead><tbody>
+        ${pendingLines.map(({ p, l, overdue }) => `<tr><td class="nowrap"><a href="purchase-orders.html?open=${esc(p.id)}">${esc(p.poNo)}</a></td><td>${esc(p.vendor?.name)}</td><td>${esc(l.name)}</td><td class="num strong">${qty(round(l.qty - (l.receivedQty || 0)))} ${esc(l.unit)}</td><td class="nowrap">${overdue ? `<span class="badge red">${fmtDate(p.expectedDate)}</span>` : fmtDate(p.expectedDate)}</td></tr>`).join("") || '<tr><td class="empty" colspan="5">Nothing pending.</td></tr>'}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>Recent activity</h3><a href="activity.html" class="small">Full log →</a></div>
+        <div class="card-body" style="max-height:420px;overflow:auto"><ul class="timeline">${activity.map((a) => `<li><time>${fmtDateTime(a.at)}</time><div><b>${esc(a.userName)}</b> <span class="badge gray">${esc(a.module)}</span><div class="small">${esc(a.summary)}</div></div></li>`).join("") || '<li class="muted">No activity yet.</li>'}</ul></div></div>
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><div class="card-head"><h3>Stock by warehouse</h3><a href="inventory.html" class="small">Stock →</a></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Warehouse</th><th class="num">Materials</th><th class="num">Packaging types</th></tr></thead><tbody>
+        ${activeWarehouses().map((w) => { const rows = stock.filter((s) => s.warehouse === w.code && s.qty > 0); const pk = rows.filter((s) => s.category === "Packaging").length; return `<tr><td class="strong">${esc(w.name)}</td><td class="num">${rows.length - pk}</td><td class="num">${pk}</td></tr>`; }).join("")}
+        </tbody></table></div></div>
+      <div class="card"><div class="card-head"><h3>Transfers in transit</h3><a href="transfers.html" class="small">Transfers →</a></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Transfer</th><th>Route</th><th>Items</th></tr></thead><tbody>
+        ${inTransit.map((t) => `<tr><td class="strong">${esc(t.trNo)}</td><td>${esc(warehouseByCode(t.from).name)} → ${esc(warehouseByCode(t.to).name)}</td><td class="small">${t.lines.map((l) => `${esc(l.name)} ${qty(l.qtySent)}`).join(", ")}</td></tr>`).join("") || '<tr><td class="empty" colspan="3">None in transit.</td></tr>'}
+        </tbody></table></div></div>
+    </div>`;
+  document.body.dataset.loaded = "1";
 }
-
-function valueOf(record, ...keys) {
-  for (const key of keys) {
-    if (record[key] !== undefined && record[key] !== null && record[key] !== "") {
-      return record[key];
-    }
-  }
-  return "";
-}
-
-function numberOf(record, ...keys) {
-  const value = valueOf(record, ...keys);
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function dateOf(record) {
-  const value = valueOf(record, "created_at", "createdAt", "timestamp", "date", "updated_at", "updatedAt");
-  if (!value) return null;
-  if (typeof value.toDate === "function") return value.toDate();
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function dateText(record) {
-  const date = dateOf(record);
-  return date ? date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "—";
-}
-
-function dateKey(record) {
-  const date = dateOf(record);
-  return date ? date.getTime() : 0;
-}
-
-function statusOf(record, fallback = "Pending") {
-  const status = valueOf(record, "status", "workflow_status", "state");
-  return status || fallback;
-}
-
-function statusClass(status) {
-  const normalized = status.toLowerCase();
-  if (normalized.includes("final") || normalized.includes("complete") || normalized.includes("approved")) return "success";
-  if (normalized.includes("reject") || normalized.includes("cancel")) return "danger";
-  return "warning";
-}
-
-function isFinalized(record) {
-  const status = statusOf(record, "").toLowerCase();
-  return record.finalized === true || status === "grn finalized";
-}
-
-function isPending(record) {
-  const status = statusOf(record, "pending").toLowerCase();
-  return !isFinalized(record) && (status.includes("pending") || !valueOf(record, "status", "workflow_status", "state"));
-}
-
-function hasDocumentPending(record) {
-  const status = valueOf(record, "document_status", "documentStatus", "documents_status").toLowerCase();
-  if (status.includes("pending") || status.includes("missing")) return true;
-
-  const invoice = valueOf(record, "invoiceFileUrl", "invoice_file_path", "invoiceFilePath", "invoice_url", "invoiceUrl");
-  const coa = valueOf(record, "coaFileUrl", "supplier_coa_path", "supplierCoaPath", "coa_url", "coaUrl");
-  return !invoice || !coa;
-}
-
-function recordText(record) {
-  return [
-    valueOf(record, "product", "product_name"),
-    valueOf(record, "supplier", "supplier_name"),
-    valueOf(record, "invoice_challan_no", "invoiceChallanNo", "invoice_no", "challan_no"),
-    valueOf(record, "lot_no", "lotNo", "supplier_lot_no", "supplierLotNo")
-  ].join(" ").toLowerCase();
-}
-
-function matchesFilters(record) {
-  const { search, status, location, date } = state.filters;
-  const recordStatus = statusOf(record).toLowerCase();
-  const recordLocation = valueOf(record, "receiving_location", "receivingLocation", "location").toLowerCase();
-  const recordDate = dateOf(record);
-  const statusMatches = !status
-    || recordStatus === status
-    || recordStatus.includes(status)
-    || (status === "finalized" && isFinalized(record))
-    || (status === "pending" && isPending(record));
-
-  return (!search || recordText(record).includes(search))
-    && statusMatches
-    && (!location || recordLocation === location)
-    && (!date || (recordDate && recordDate.toISOString().slice(0, 10) === date));
-}
-
-function emptyRow(columnCount, message = "No records found") {
-  return `<tr><td class="empty-cell" colspan="${columnCount}">${message}</td></tr>`;
-}
-
-function renderStats() {
-  const totalStock = state.stock.reduce((total, record) => total + numberOf(record, "available_quantity", "availableQuantity", "quantity", "current_stock", "currentStock"), 0);
-  const pendingKanta = state.inward.filter((record) => statusOf(record, "").toUpperCase() === "KANTA PENDING").length;
-  const pendingGrn = state.inward.filter((record) => statusOf(record, "").toUpperCase() === "GRN PENDING").length;
-
-  elements.totalInward.textContent = state.inward.length.toLocaleString();
-  elements.pendingKanta.textContent = pendingKanta.toLocaleString();
-  elements.pendingGrn.textContent = pendingGrn.toLocaleString();
-  elements.totalStock.textContent = totalStock.toLocaleString();
-  elements.pendingKantaCount.textContent = pendingKanta.toLocaleString();
-  elements.pendingGrnCount.textContent = pendingGrn.toLocaleString();
-  elements.pendingDocumentsCount.textContent = state.inward.filter(hasDocumentPending).length.toLocaleString();
-}
-
-function renderRecent() {
-  const records = state.inward
-    .filter(matchesFilters)
-    .sort((a, b) => dateKey(b) - dateKey(a));
-
-  elements.recentCount.textContent = `${records.length} records`;
-  elements.recentBody.innerHTML = records.length ? records.slice(0, 10).map((record) => {
-    const status = statusOf(record, "INWARD");
-    return `<tr>
-      <td>${escapeHTML(dateText(record))}</td>
-      <td>${escapeHTML(valueOf(record, "invoice_challan_no", "invoiceChallanNo", "invoice_no", "challan_no"))}</td>
-      <td>${escapeHTML(valueOf(record, "product", "product_name"))}</td>
-      <td>${escapeHTML(valueOf(record, "supplier", "supplier_name"))}</td>
-      <td>${escapeHTML(valueOf(record, "declared_quantity", "declaredQuantity", "quantity"))}</td>
-      <td>${escapeHTML(valueOf(record, "receiving_location", "receivingLocation", "location"))}</td>
-      <td><span class="status-tag ${statusClass(status)}">${escapeHTML(status)}</span></td>
-      <td><a class="row-action" href="record_detail.html?id=${encodeURIComponent(record.id)}">View</a></td>
-    </tr>`;
-  }).join("") : emptyRow(8);
-}
-
-function renderFinalized() {
-  const records = state.inward
-    .filter((record) => statusOf(record, "").toUpperCase() === "GRN FINALIZED")
-    .filter(matchesFilters)
-    .sort((a, b) => dateKey(b) - dateKey(a));
-
-  elements.finalizedCount.textContent = `${records.length} records`;
-  elements.finalizedBody.innerHTML = records.length ? records.map((record) => {
-    const status = "GRN FINALIZED";
-    const coa = valueOf(record, "coaFileUrl", "coa_file_url", "supplier_coa_path", "coa_url", "coaUrl");
-    const invoice = valueOf(record, "invoiceFileUrl", "invoice_file_url", "invoiceFilePath", "invoice_url", "invoiceUrl");
-    return `<tr>
-      <td>${escapeHTML(dateText(record))}</td>
-      <td>${escapeHTML(valueOf(record, "invoice_challan_no", "invoiceChallanNo", "invoice_no", "challan_no"))}</td>
-      <td>${escapeHTML(valueOf(record, "product", "product_name"))}</td>
-      <td>${escapeHTML(valueOf(record, "supplier", "supplier_name"))}</td>
-      <td>${escapeHTML(valueOf(record, "receiving_location", "receivingLocation", "location"))}</td>
-      <td>${coa ? `<a class="row-action" href="${escapeHTML(coa)}" target="_blank" rel="noopener noreferrer">View</a>` : "—"}</td>
-      <td>${invoice ? `<a class="row-action" href="${escapeHTML(invoice)}" target="_blank" rel="noopener noreferrer">View</a>` : "—"}</td>
-      <td><span class="status-tag ${statusClass(status)}">${escapeHTML(status)}</span></td>
-      <td><a class="row-action" href="record_detail.html?id=${encodeURIComponent(record.id)}">View</a></td>
-    </tr>`;
-  }).join("") : emptyRow(9);
-}
-
-function renderStock() {
-  const records = state.stock
-    .filter(matchesFilters)
-    .sort((a, b) => dateKey(b) - dateKey(a));
-
-  elements.stockCount.textContent = `${records.length} records`;
-  elements.stockBody.innerHTML = records.length ? records.map((record) => `<tr>
-    <td>${escapeHTML(valueOf(record, "product", "product_name"))}</td>
-    <td>${escapeHTML(valueOf(record, "lot_no", "lotNo", "supplier_lot_no", "supplierLotNo"))}</td>
-    <td>${escapeHTML(valueOf(record, "location", "receiving_location", "receivingLocation"))}</td>
-    <td>${escapeHTML(valueOf(record, "available_quantity", "availableQuantity", "quantity", "current_stock", "currentStock"))}</td>
-    <td>${escapeHTML(valueOf(record, "unit", "quantity_unit", "quantityUnit"))}</td>
-    <td>${escapeHTML(dateText(record))}</td>
-  </tr>`).join("") : emptyRow(6);
-}
-
-function updateLocationOptions() {
-  const locations = new Set([...state.inward, ...state.grn, ...state.stock]
-    .map((record) => valueOf(record, "receiving_location", "receivingLocation", "location"))
-    .filter(Boolean));
-  const selected = state.filters.location;
-  elements.location.innerHTML = `<option value="">All locations</option>${[...locations].sort().map((location) => `<option value="${escapeHTML(location.toLowerCase())}">${escapeHTML(location)}</option>`).join("")}`;
-  elements.location.value = selected;
-}
-
-function render() {
-  renderStats();
-  updateLocationOptions();
-  renderRecent();
-  renderFinalized();
-  renderStock();
-}
-
-function listenToCollection(name) {
-  return onSnapshot(collection(db, name), (snapshot) => {
-    state[name] = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-    render();
-  }, (error) => {
-    console.error(`Unable to load ${name} records.`, error);
-    dashboardStatus.textContent = "Unable to load records.";
-    dashboardStatus.style.color = "var(--danger)";
-    state[name] = [];
-    render();
-  });
-}
-
-["inward", "kanta", "grn", "stock", "outward"].forEach(listenToCollection);
-
-["search", "status", "location", "date"].forEach((filter) => {
-  elements[filter].addEventListener("input", (event) => {
-    state.filters[filter] = event.target.value.trim().toLowerCase();
-    renderRecent();
-    renderFinalized();
-    renderStock();
-  });
-});
-
-render();

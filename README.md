@@ -1,1 +1,165 @@
-# IMS
+# CCPL ERP — Cognizant Chemical Pvt. Ltd.
+
+Static web app (HTML + JavaScript modules) on **Firebase** (Authentication, Firestore, Storage).
+No build step: every page is a plain `.html` file with one script in `js/`.
+
+**Purpose:** the ERP runs day-to-day operations — PO, inward (invoice → GRN → Kanta), transport, rejected vehicles,
+stock, transfers, quotations, SO, proforma invoices and dispatch. **Tally remains the system for billing and
+accounting entries.** The ERP's statuses (payable quantity after Kanta, "Payment Hold — Rejected Inward", transport cost)
+are instructions for the accounts team when they make the Tally entries; nothing in the ERP posts to or blocks Tally.
+
+## What's in it
+
+| Area | Page | Script |
+|---|---|---|
+| Sign in (email + password, only listed users) | `index.html` | `js/login.js` |
+| Dashboard | `dashboard.html` | `js/dashboard.js` |
+| Exceptions — only what needs attention (overdue POs, GRN waiting for Kanta, Kanta short/excess, invoice ≠ payable, partial POs, manual stock entries) | `exceptions.html` | `js/exceptions.js`, `js/exceptions-data.js` |
+| Purchase Orders — PO series (PH / Monthly), create, PDF, item-wise PO / GRN / Kanta / Short-Excess / Inward / Pending / Payable, internal transport cost, close | `purchase-orders.html` | `js/purchase-orders.js` |
+| Invoice → GRN → Kanta → stock inward (multi-item invoices; Kanta is final and payable); transport arrangement & amount; **Vehicle Rejected** with payment hold | `inward.html` | `js/inward.js` |
+| Vendors & Customers (one shared list, Party Type Customer / Supplier / Both) and Items & Packaging — import template (Excel / CSV), import with preview, row/column errors, skip or update duplicates, report (also accepts Zoho Books exports), export | `parties.html`, `items.html` | `js/masters.js` |
+| Quotations → Sales Orders / Proforma Invoices (Document Type dropdown switches SO ⇄ PI and keeps what was typed; every party can be selected) | `quotations.html`, `sales-orders.html`, `proforma.html` | `js/sales-docs.js`, `js/proforma.js`, `js/sales-draft.js` |
+| Warehouses — create, rename (stock and history stay linked), View details: address, contact person, phone, note | `warehouses.html` | `js/warehouses.js` |
+| Proforma Invoices — standalone or from a Sales Order; IGST/CGST+SGST, terms → due date, HSN summary, bank details, Balance Due; mark paid / cancel | `proforma.html` | `js/proforma.js` |
+| Outward / Dispatch (deducts product **and** drums/carboys/bottles) + Delivery Challan PDF | `outward.html` | `js/outward.js` |
+| Stock by warehouse + item ledger + **Add Existing / Opening Stock** | `inventory.html` | `js/inventory.js` |
+| Stock transfer between warehouses (in transit → received, transit loss) | `transfers.html` | `js/transfers.js` |
+| Write-off / adjustment (damaged, destroyed, count correction; admin can delete/reverse) | `adjustments.html` | `js/adjustments.js` |
+| Activity log (who did what, to the second; cannot be edited) | `activity.html` | `js/activity.js` |
+| Settings: company legal details, bank details, number formats (PH series, Monthly series, PI…), users & roles | `settings.html` | `js/settings.js` |
+| Access Audit — logins, last active, logout, who did GRN / Kanta and GRN→Kanta time (**only rupesh.mudliar@cognizantchemical.com**) | `access.html` | `js/access.js` |
+
+Shared code: `js/core.js` (login guard, layout, GST maths, numbering, **stock engine**, activity log),
+`js/pdf.js` (PO / Quotation / SO / Proforma Invoice / Challan PDF layout), `js/security-deterrent.js` (blocks right-click / dev-tools shortcuts; a deterrent only), `js/line-editor.js`, `js/uploads.js`, `css/app.css` (theme).
+
+Security: `firestore.rules` and `storage.rules`. Nobody can read or write anything unless they are signed in
+**and** have an active profile in `users/{uid}`. The activity log and stock ledger cannot be edited or deleted by anyone.
+
+Warehouses: **PG-106, PG-153, Breeze, Taloja Unit** to start with. Admins and managers add or rename them on the Warehouses page.
+The code (e.g. `TALOJA`) never changes, so a renamed warehouse keeps all stock, transfers and history.
+
+## How PO quantities are tracked
+
+Flow: **PO → Invoice / Receipt → GRN → Kanta → Stock inward → Payable quantity.**
+GRN records what physically arrived; **Kanta is the final truth** — only the Kanta quantity goes into stock and is payable.
+One invoice can carry several PO items, and a PO can receive any number of invoices until every item is complete.
+
+| Item | PO Qty | GRN Qty | Kanta Qty | Short/Excess | Inward | Pending |
+|---|---|---|---|---|---|---|
+| Apple | 10 kg | 5 kg | 5 kg | 0 | 5 kg | 5 kg |
+| Methanol | 20,000 kg | 10,000 kg | 9,970 kg | −30 kg | 9,970 kg | 10,030 kg |
+
+PO statuses: **Open → Partially Received** (invoice entered) **→ Awaiting Kanta** (GRN done) **→ Partially Inwarded → Completed**,
+or **Closed** (manager closes a PO that will not be fully supplied, with a reason) / **Cancelled**.
+A PO completes automatically within the tolerance in Settings (default 0.5 %).
+
+Document numbers are issued automatically from the format set in Settings and are **never repeated** — every issued number
+is registered, so if a counter is set back by mistake the system skips to the next free number. Numbers are assigned inside the
+save itself, so two people saving at the same moment always get different numbers.
+
+### PO series
+Every new PO picks a **PO Series**:
+
+| Series | Format (Settings) | Numbers | Restarts |
+|---|---|---|---|
+| PH | `CCPL/PH/{SEQ}/{FY}`, 3 digits | CCPL/PH/055/26-27, 056, 057… | every financial year |
+| Monthly | `CCPL/{MON} {YY}/{SEQ}`, 2 digits | CCPL/OCT 26/01, 02… then CCPL/NOV 26/01 | every month (from the PO date) |
+
+Each series has its own counter; set the starting number in **Settings → Document numbering**. Editing a PO never changes its number.
+
+### Transport (inward)
+Each inward entry records **Transport Arrangement** (Self / CCPL Transport or Party Transport) and the **Transportation Amount**,
+with who created it and when. The amount can be corrected later ("Edit transport", logged). It is internal: shown on the inward
+history and the PO screen, **not** printed on the PO PDF and **not** added to the PO total.
+
+### Vehicle rejected / payment hold
+A vehicle can be marked **Vehicle Rejected** at gate entry, at GRN, at Kanta, or (manager/admin) after Kanta — then its stock is
+taken back out. A rejected entry adds no stock, counts **zero** against the PO (the PO quantity stays pending) and stays visible
+in the inward history and on the PO with its reason, user and time. It shows **"Payment Hold — Rejected Inward"** so accounts do
+not pay it; only that receipt is held, never the other receipts on the PO. A manager/admin can **Resolve payment hold** with a
+note (e.g. credit note received). The ERP has no payment approval of its own, and the hold does not block anything in Tally.
+
+PDFs carry "System Generated Document — No Signature Required." instead of a signature box.
+
+## Updating the live site after a new version
+
+1. Replace the files in the GitHub repo with the new version (Vercel redeploys the site automatically).
+2. **Publish the new security rules** — new features (proforma invoices, rejected vehicles / payment hold, warehouses by managers)
+   are refused by the old rules until this is done:
+   ```bash
+   npm install
+   GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run deploy:rules
+   ```
+3. Sign in as admin → **Settings → Document numbering**: set the next **PH series** number (e.g. 55) and check the Monthly series.
+
+## First-time setup (live Firebase project `ccpl-ims`)
+
+1. Install [Node.js 20+](https://nodejs.org), then in this folder run `npm install`.
+2. Firebase console → *Authentication → Sign-in method*: enable **Email/Password** only (disable Google if not needed).
+   Also turn on *Settings → User actions → Email enumeration protection*.
+3. Firebase console → *Project settings → Service accounts → Generate new private key*. Save it in this folder as
+   `service-account.json` (it is git-ignored — never commit it).
+4. Copy `admin/users.example.json` to `admin/users.json` and put the passwords in (git-ignored).
+5. Lock the database and create the logins, company details, 4 warehouses and packaging items — one command:
+   ```bash
+   GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run golive
+   ```
+   (`npm run deploy:rules` alone publishes only the security rules.) Afterwards you can delete the key in the
+   Firebase console (*Service accounts → Manage keys*) — it is only needed again for these scripts.
+6. The site itself is hosted on **Vercel** from this GitHub repo: every pull request gets a preview link (posted on
+   the PR by the Vercel bot) and merging into `main` updates the live site. `vercel.json` / `.vercelignore` keep the
+   admin scripts and tests off the public site.
+7. Sign in → Settings: set the next PO number (e.g. 824 to continue after CCPL/PG/823/26-27), fill Breeze and Taloja
+   addresses; check the bank details printed on quotations / proforma invoices.
+
+After that, add or deactivate users from **Settings → Users** (admin only).
+
+### Importing customers and suppliers (template)
+Vendors & Customers → **Import template** → download the Excel (or CSV) template. Columns are labelled **(Required)** or
+**(Optional)**; only *Party Name* and *Party Type* (Customer / Supplier / Both) are required. A company that is both a customer
+and a supplier is one row with Party Type **Both** — it then appears in PO, SO and PI dropdowns without a duplicate record.
+**Import Excel / CSV** shows a preview first: every error with its row number and column, duplicates inside the file (merged),
+and records that already exist (matched by GSTIN, or by name without GSTIN) — choose **Skip** or **Update** (update never blanks
+out existing data or renames the party). The report shows how many were added, updated, skipped and failed, and the failed rows
+can be downloaded to fix and re-import.
+
+### Importing your existing vendors/customers from Zoho Books
+Vendors & Customers → **Import Excel** → choose the Zoho *Vendors* or *Contacts* export as-is. The preview shows
+what will be added; the same company entered twice in Zoho (same GSTIN) is merged into one record, Inactive
+contacts stay inactive, and rows with an invalid GSTIN are listed so you can fix them in Excel and import again.
+Importing the same file twice updates instead of duplicating.
+
+## How to check everything works
+
+### Automatic test (recommended — runs the full business flow on a throw-away local database)
+Needs Java 11+ and Node 20+:
+```bash
+npm install
+npx playwright install chromium
+npm test
+```
+It runs 119 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
+short close, auto-complete, 0.5 % tanker tolerance, IGST, PH and Monthly PO series (month change, edit keeps number, two users saving
+at once), transport amount kept off the PO PDF, vehicle rejected at entry / Kanta / after Kanta with payment hold and its resolution,
+party import (template, row/column errors, skip/update, report, CSV, Zoho), warehouse create/rename/details,
+transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO → dispatch with drum deduction,
+SO ⇄ PI document type with a supplier as customer, proforma invoice from a sales order (IGST, due date, PDF, mark paid), stock ledger, activity log, and that operators/outsiders are blocked by the rules.
+PDFs and screenshots are written to `tests/output/`.
+
+### Manual test without touching live data
+```bash
+npx firebase emulators:start --project demo-ccpl --only auth,firestore,storage
+node admin/setup.mjs --emulator --users admin/users.json     # in a second terminal
+npm run serve                                                   # third terminal
+```
+Open http://localhost:5500/index.html?emulator=1 — a yellow **TEST MODE** badge shows you are on the emulator.
+Open without `?emulator=1` (or with `?emulator=0`) to use live data again.
+
+## Roles
+
+| Role | Can do |
+|---|---|
+| admin | Everything, incl. settings, users, delete/reverse entries |
+| manager | POs, quotations, sales orders, short-close, write-offs + all operations |
+| operator | Inward, kanta, GRN, dispatch, transfers, masters |
+| viewer | Read only |

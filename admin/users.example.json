@@ -1,0 +1,8 @@
+[
+  { "name": "Rupesh Mudliar", "email": "rupesh.mudliar@cognizantchemical.com", "role": "admin", "password": "CHANGE-ME-min-10-chars" },
+  { "name": "CCPL Admin", "email": "cognizantchemicalpvtltd@gmail.com", "role": "admin", "password": "CHANGE-ME-min-10-chars" },
+  { "name": "Commercial", "email": "commercial@cognizantchemical.com", "role": "manager", "password": "CHANGE-ME-min-10-chars" },
+  { "name": "Bhavna", "email": "bhavna@cognizantchemical.com", "role": "manager", "password": "CHANGE-ME-min-10-chars" },
+  { "name": "Aarjavi Mudliar", "email": "aarjavi.mudliar@gmail.com", "role": "manager", "password": "CHANGE-ME-min-10-chars" },
+  { "name": "Deepak", "email": "deepak@cognizantchemical.com", "role": "operator", "password": "CHANGE-ME-min-10-chars" }
+]

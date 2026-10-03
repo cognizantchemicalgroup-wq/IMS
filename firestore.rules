@@ -1,54 +1,160 @@
 rules_version = '2';
+
+// CCPL ERP security rules.
+// Nobody can read or write anything unless they are signed in AND have an
+// active profile in /users/{uid} created by an admin. Self-registered
+// accounts therefore get no access at all.
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId} {
+
+    function signedIn() { return request.auth != null; }
+    function profilePath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function profile() { return get(profilePath()).data; }
+    // get() of a missing profile fails the rule, so no separate exists() call is needed (fewer document reads per request).
+    function active() { return signedIn() && profile().active == true; }
+    function hasRole(roles) { return active() && profile().role in roles; }
+    function isAdmin() { return hasRole(['admin']); }
+    function isManager() { return hasRole(['admin', 'manager']); }
+    function isOperator() { return hasRole(['admin', 'manager', 'operator']); }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    // The only account that may read login sessions (private access audit).
+    function isSuperAdmin() { return active() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com'; }
+    function poOpenStatuses() { return ['OPEN', 'PARTIALLY RECEIVED', 'AWAITING KANTA', 'PARTIALLY INWARDED', 'COMPLETED']; }
+
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow read: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.role in ['admin', 'manager', 'operator', 'viewer']
+        && request.resource.data.active is bool
+        && request.resource.data.email is string;
+      allow delete: if false;
+    }
+
+    match /settings/{id} {
+      allow read: if active();
+      allow write: if isAdmin();
+    }
+    // Warehouses are keyed by a permanent code, so renaming never breaks stock or history. Never deleted.
+    match /warehouses/{id} {
+      allow read: if active();
+      allow create, update: if isManager() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if false;
+    }
+    // Running document numbers; advanced inside the same transaction as the document.
+    match /counters/{id} {
+      allow read: if active();
+      allow create, update: if isOperator() && request.resource.data.next is int && request.resource.data.next >= 1;
+      allow delete: if false;
+    }
+    // Registry of every document number ever issued: a number can be created once and never changed or removed,
+    // so duplicates are impossible even if a counter is set back by mistake.
+    match /docNumbers/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.number is string;
+      allow update, delete: if false;
+    }
+    // Login sessions: each user writes only their own; only the super admin can read them.
+    match /sessions/{id} {
+      allow read: if isSuperAdmin();
+      allow create: if active() && request.resource.data.uid == request.auth.uid;
+      allow update: if signedIn() && resource.data.uid == request.auth.uid && onlyChanges(['lastActiveAt', 'logoutAt', 'endReason']);
+      allow delete: if false;
+    }
+
+    // Vendors and customers share one list.
+    match /parties/{id} {
+      allow read: if active();
+      allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if isAdmin();
+    }
+    match /items/{id} {
+      allow read: if active();
+      allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if isAdmin();
+    }
+
+    // Managers raise/close POs; operators may only update received quantities via inward/GRN.
+    match /purchaseOrders/{id} {
+      allow read: if active();
+      allow create: if isManager() && request.resource.data.status == 'OPEN';
+      allow update: if isManager()
+        || (isOperator() && onlyChanges(['lines', 'status', 'updatedAt'])
+            && request.resource.data.status in poOpenStatuses()
+            && resource.data.status in poOpenStatuses());
+      allow delete: if isAdmin();
+    }
+    match /quotations/{id} {
+      allow read: if active();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
+    match /proformaInvoices/{id} {
+      allow read: if active();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
+    match /salesOrders/{id} {
+      allow read: if active();
+      allow create: if isManager();
+      allow update: if isManager()
+        || (isOperator() && onlyChanges(['lines', 'status', 'updatedAt'])
+            && request.resource.data.status in ['OPEN', 'PARTIALLY DISPATCHED', 'COMPLETED']);
+      allow delete: if isAdmin();
+    }
+
+    // Receipts: a rejected vehicle stays rejected, and once a payment hold exists only a manager/admin can change it.
+    match /receipts/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.stage in ['GRN PENDING', 'REJECTED'];
+      allow update: if isOperator()
+        && (request.resource.data.stage != 'CANCELLED' || isAdmin())
+        && (resource.data.stage != 'REJECTED' || request.resource.data.stage == 'REJECTED')
+        && (request.resource.data.get('paymentHold', null) == resource.data.get('paymentHold', null)
+            || resource.data.get('paymentHold', null) == null
+            || isManager());
+      allow delete: if false;
+    }
+    match /outwards/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.status == 'POSTED';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+    match /transfers/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.status == 'IN TRANSIT';
+      allow update: if (isOperator() && request.resource.data.status == 'RECEIVED') || (isManager() && request.resource.data.status == 'CANCELLED');
+      allow delete: if false;
+    }
+    match /adjustments/{id} {
+      allow read: if active();
+      allow create: if isManager() && request.resource.data.status == 'POSTED';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // Stock balances: never negative, never deleted.
+    match /inventory/{id} {
+      allow read: if active();
+      allow create, update: if isOperator() && request.resource.data.qty is number && request.resource.data.qty >= 0;
+      allow delete: if false;
+    }
+    // Stock ledger and activity log are append-only: no one (not even admin) can edit or delete.
+    match /stockLedger/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+    match /activity/{id} {
+      allow read: if active();
+      allow create: if active() && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+
+    // Everything else (including the old inward/kanta/grn/stock collections) is locked.
+    match /{document=**} {
       allow read, write: if false;
-    }
-
-    match /customers/{customerId} {
-      allow read: if true;
-      allow create: if request.resource.data.name is string
-        && request.resource.data.name.size() > 0;
-      allow update, delete: if false;
-    }
-
-    match /inward/{document=**} {
-      allow read, create, update, delete: if true;
-    }
-    match /kanta/{document=**} {
-      allow read, create, update, delete: if true;
-    }
-    match /grn/{document=**} {
-      allow read, create, update, delete: if true;
-    }
-    match /stock/{document=**} {
-      allow read, create, update: if true;
-      allow delete: if false;
-    }
-    match /stockLedger/{document=**} {
-      allow read, create: if true;
-      allow update, delete: if false;
-    }
-
-    match /packaging_stock/{document=**} {
-      allow read, create, update: if true;
-      allow delete: if false;
-    }
-    match /packaging_receipts/{document=**} {
-      allow read, create: if true;
-      allow update, delete: if false;
-    }
-    match /packaging_configurations/{document=**} {
-      allow read, create, update: if true;
-      allow delete: if false;
-    }
-    match /packaging_transactions/{document=**} {
-      allow read, create: if true;
-      allow update, delete: if false;
-    }
-    match /outward/{document=**} {
-      allow read, create, update: if true;
-      allow delete: if false;
     }
   }
 }
