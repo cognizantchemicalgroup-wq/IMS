@@ -102,5 +102,7 @@ export function createLineEditor(host, { items, lines = [], isIntraState, itemFi
   }
 
   render();
-  return { value, totals, refresh: renderTotals };
+  /** Unvalidated copy of the lines entered so far (used to carry a draft to another document type). */
+  const draft = () => rows.filter((r) => r.itemId).map((r) => ({ ...r }));
+  return { value, totals, refresh: renderTotals, draft };
 }

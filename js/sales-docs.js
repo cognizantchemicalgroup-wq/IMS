@@ -7,6 +7,7 @@ import {
   reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
+import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js";
 import { quotationSpec, soSpec, showDocument, safeFileName } from "./pdf.js";
 import { collection, doc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -76,17 +77,18 @@ export async function startSalesPage(kind) {
   });
 
   /* ---------------- Editor ---------------- */
-  function openEditor(existing = null, { fromQuotation = null } = {}) {
+  function openEditor(existing = null, { fromQuotation = null, fromDraft = null } = {}) {
     if (!customers.filter((c) => c.active !== false).length) { toast("Add the customer first (Purchase → Vendors & Customers).", "error"); return; }
-    const d = existing || fromQuotation || {};
+    const d = existing || fromQuotation || fromDraft || {};
     const editing = Boolean(existing);
     const soFromQ = !isQ && fromQuotation;
     const modal = openModal({
       title: editing ? `Edit ${d[cfg.noKey]}` : soFromQ ? `Sales Order from ${fromQuotation.quoteNo}` : `New ${cfg.singular}`,
       size: "full",
       body: `<form id="sForm" novalidate><div class="form-grid">
-        <label class="field span-2"><span>Customer <b class="req">*</b></span><select name="customerId"><option value="">Select customer…</option>${customers.filter((c) => c.active !== false || c.id === d.customer?.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${esc(c.id)}" ${c.id === d.customer?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
-        <label class="field"><span>Date <b class="req">*</b></span><input type="date" name="date" value="${esc(editing ? d.date : isoDate())}" /></label>
+        ${!isQ && !editing && !soFromQ ? docTypeField("SO") : ""}
+        <label class="field span-2"><span>Customer / Party <b class="req">*</b></span><select name="customerId"><option value="">Select party…</option>${customers.filter((c) => c.active !== false || c.id === d.customer?.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => partyOption(c, d.customer?.id)).join("")}</select></label>
+        <label class="field"><span>Date <b class="req">*</b></span><input type="date" name="date" value="${esc(editing || fromDraft ? d.date || isoDate() : isoDate())}" /></label>
         ${isQ ? `<label class="field"><span>Valid Until</span><input type="date" name="validUntil" value="${esc(d.validUntil || addDays(isoDate(), 15))}" /></label>
           <label class="field"><span>Enquiry Ref</span><input name="enquiryRef" value="${esc(d.enquiryRef || "")}" /></label>
           <label class="field"><span>Kind Attn.</span><input name="kindAttn" value="${esc(d.kindAttn || "")}" /></label>
@@ -120,6 +122,18 @@ export async function startSalesPage(kind) {
     };
     form.customerId.addEventListener("change", () => { form.placeOfSupply.value = ""; syncCustomer(); });
     syncCustomer();
+    // Sales Order ⇄ Proforma Invoice: carry what was typed to the other document.
+    form.docType?.addEventListener("change", () => {
+      if (form.docType.value !== "PI") return;
+      const v = formValues(form);
+      const days = Number.parseInt(v.paymentTerms, 10);
+      modal.close();
+      openOtherType("PI", {
+        customerId: v.customerId, date: v.date, refNo: v.customerPoNo, refDate: v.customerPoDate, placeOfSupply: v.placeOfSupply,
+        warehouse: v.warehouse, shipToLines: v.shipTo ? v.shipTo.split("\n").map((x) => x.trim()).filter(Boolean) : [], notes: v.notes,
+        termsDays: Number.isFinite(days) ? days : "", lines: editor.draft()
+      });
+    });
 
     modal.el.querySelector("#saveS").addEventListener("click", async (event) => {
       const v = formValues(form);
@@ -254,6 +268,15 @@ export async function startSalesPage(kind) {
 
   await load();
   document.body.dataset.loaded = "1";
+  // Arriving from a Proforma Invoice form switched to "Sales Order"
+  const draft = !isQ && canEdit ? takeDraft("SO") : null;
+  if (draft) {
+    openEditor(null, { fromDraft: {
+      customer: { id: draft.customerId }, date: draft.date, customerPoNo: draft.refNo, customerPoDate: draft.refDate, placeOfSupply: draft.placeOfSupply,
+      warehouse: draft.warehouse, shipTo: draft.shipToLines?.length ? { addressLines: draft.shipToLines } : null, notes: draft.notes,
+      paymentTerms: draft.termsDays !== "" && draft.termsDays !== undefined ? `${draft.termsDays} Days` : undefined, lines: draft.lines || []
+    } });
+  }
   // Arriving from "Convert to Sales Order"
   if (!isQ) {
     const qid = sessionStorage.getItem("ccpl-convert-quotation");

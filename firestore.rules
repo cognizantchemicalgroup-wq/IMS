@@ -10,7 +10,8 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function profilePath() { return /databases/$(database)/documents/users/$(request.auth.uid); }
     function profile() { return get(profilePath()).data; }
-    function active() { return signedIn() && exists(profilePath()) && profile().active == true; }
+    // get() of a missing profile fails the rule, so no separate exists() call is needed (fewer document reads per request).
+    function active() { return signedIn() && profile().active == true; }
     function hasRole(roles) { return active() && profile().role in roles; }
     function isAdmin() { return hasRole(['admin']); }
     function isManager() { return hasRole(['admin', 'manager']); }
@@ -34,9 +35,11 @@ service cloud.firestore {
       allow read: if active();
       allow write: if isAdmin();
     }
+    // Warehouses are keyed by a permanent code, so renaming never breaks stock or history. Never deleted.
     match /warehouses/{id} {
       allow read: if active();
-      allow write: if isAdmin();
+      allow create, update: if isManager() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if false;
     }
     // Running document numbers; advanced inside the same transaction as the document.
     match /counters/{id} {
@@ -100,10 +103,16 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Receipts: a rejected vehicle stays rejected, and once a payment hold exists only a manager/admin can change it.
     match /receipts/{id} {
       allow read: if active();
-      allow create: if isOperator() && request.resource.data.stage == 'GRN PENDING';
-      allow update: if isOperator() && (request.resource.data.stage != 'CANCELLED' || isAdmin());
+      allow create: if isOperator() && request.resource.data.stage in ['GRN PENDING', 'REJECTED'];
+      allow update: if isOperator()
+        && (request.resource.data.stage != 'CANCELLED' || isAdmin())
+        && (resource.data.stage != 'REJECTED' || request.resource.data.stage == 'REJECTED')
+        && (request.resource.data.get('paymentHold', null) == resource.data.get('paymentHold', null)
+            || resource.data.get('paymentHold', null) == null
+            || isManager());
       allow delete: if false;
     }
     match /outwards/{id} {

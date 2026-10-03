@@ -2,11 +2,12 @@ import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
   reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES,
-  OPEN_PO_STATUSES, normalizeReceipt
+  OPEN_PO_STATUSES, normalizeReceipt, PO_SERIES, formatNumber, counterId, numberPeriodLabel, accountsBadge, isOnHold, receiptStageLabel,
+  TRANSPORT_MODES, HOLD_TEXT
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { poSpec, showDocument, safeFileName } from "./pdf.js";
-import { collection, doc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const n = (v) => Number(v) || 0;
 const page = await initPage("po");
@@ -24,7 +25,8 @@ async function start() {
     <div class="tabs" id="tabs"></div>
     <div class="card">
       <div class="card-head"><div class="toolbar"><input class="input search" id="search" placeholder="Search PO no, vendor, item…" />
-        <select class="input" id="whFilter"><option value="">All delivery locations</option>${warehouseOptions("", { includeBlank: false })}</select></div><span class="small muted" id="count"></span></div>
+        <select class="input" id="whFilter"><option value="">All delivery locations</option>${warehouseOptions("", { includeBlank: false })}</select>
+        <select class="input" id="seriesFilter"><option value="">All PO series</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div><span class="small muted" id="count"></span></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>PO No.</th><th>Date</th><th>Vendor</th><th>Deliver To</th><th>Items</th><th class="num">Value (₹)</th><th>Received</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
@@ -41,7 +43,8 @@ async function start() {
     page.querySelector("#tabs").innerHTML = TABS.map(([k, label]) => `<button class="tab ${k === tab ? "active" : ""}" data-tab="${k}">${label}<span class="count">${pos.filter((p) => inTab(p, k)).length}</span></button>`).join("");
     const term = page.querySelector("#search").value.trim().toLowerCase();
     const wh = page.querySelector("#whFilter").value;
-    const list = pos.filter((p) => inTab(p, tab) && (!wh || p.warehouse === wh)
+    const series = page.querySelector("#seriesFilter").value;
+    const list = pos.filter((p) => inTab(p, tab) && (!wh || p.warehouse === wh) && (!series || p.series === series)
       && (!term || [p.poNo, p.vendor?.name, p.refNo, ...p.lines.map((l) => l.name)].some((v) => String(v || "").toLowerCase().includes(term))));
     page.querySelector("#count").textContent = `${list.length} purchase order${list.length === 1 ? "" : "s"}`;
     const rows = page.querySelector("#rows");
@@ -50,7 +53,7 @@ async function start() {
       const { ordered, received } = lineProgress(p);
       const single = p.lines.length === 1 ? p.lines[0] : null;
       return `<tr>
-        <td class="strong nowrap"><a href="#" data-view="${esc(p.id)}">${esc(p.poNo)}</a></td>
+        <td class="strong nowrap"><a href="#" data-view="${esc(p.id)}">${esc(p.poNo)}</a>${p.series ? `<div class="small muted">${esc(PO_SERIES[p.series]?.label || p.series)}</div>` : ""}</td>
         <td class="nowrap">${fmtDate(p.date)}</td>
         <td>${esc(p.vendor?.name)}</td>
         <td>${esc(warehouseByCode(p.warehouse).name)}</td>
@@ -82,10 +85,11 @@ async function start() {
   });
   page.querySelector("#search").addEventListener("input", render);
   page.querySelector("#whFilter").addEventListener("change", render);
+  page.querySelector("#seriesFilter").addEventListener("change", render);
   page.querySelector("#newPo")?.addEventListener("click", () => openEditor());
   page.querySelector("#exportBtn").addEventListener("click", () => {
     const rows = pos.flatMap((p) => p.lines.map((l) => ({
-      "PO No": p.poNo, Date: fmtDate(p.date), Vendor: p.vendor?.name, "Vendor GSTIN": p.vendor?.gstin || "", "Deliver To": warehouseByCode(p.warehouse).name,
+      "PO No": p.poNo, Series: PO_SERIES[p.series]?.label || "", Date: fmtDate(p.date), Vendor: p.vendor?.name, "Vendor GSTIN": p.vendor?.gstin || "", "Deliver To": warehouseByCode(p.warehouse).name,
       Item: l.name, HSN: l.hsn, Unit: l.unit, "Ordered Qty": l.qty, Rate: l.rate, "GST %": l.gstRate, "Line Amount": round(l.qty * l.rate, 2),
       "Invoiced Qty": l.invoicedQty || 0, "GRN Qty": l.grnQty || 0, "Kanta Qty": round((l.grnQty || 0) - (l.pendingKantaQty || 0) + (l.varianceQty || 0)),
       "Short(-)/Excess(+)": l.varianceQty || 0, "Inward (Payable) Qty": l.receivedQty || 0, "Awaiting Kanta": l.pendingKantaQty || 0,
@@ -107,6 +111,8 @@ async function start() {
       size: "full",
       body: `<form id="poForm" novalidate>
         <div class="form-grid">
+          ${editing ? `<label class="field"><span>PO Series</span><input readonly value="${esc(PO_SERIES[po.series]?.label || "—")} · ${esc(po.poNo)}" /><small class="help">The PO number never changes when a PO is edited.</small></label>`
+            : `<label class="field"><span>PO Series <b class="req">*</b></span><select name="series"><option value="">Select series…</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}" ${duplicate && po.series === k ? "selected" : ""}>${esc(v.label)} — e.g. ${esc(v.example)}</option>`).join("")}</select><small class="help" data-nextno>The number is assigned when the PO is saved.</small></label>`}
           <label class="field span-2"><span>Vendor <b class="req">*</b></span><select name="vendorId" required><option value="">Select vendor…</option>${vendors.filter((v) => v.active !== false || v.id === po.vendor?.id).sort((a, b) => a.name.localeCompare(b.name)).map((v) => `<option value="${esc(v.id)}" ${v.id === po.vendor?.id ? "selected" : ""}>${esc(v.name)}${v.gstin ? ` · ${esc(v.gstin)}` : ""}</option>`).join("")}</select></label>
           <label class="field"><span>PO Date <b class="req">*</b></span><input type="date" name="date" value="${esc(editing ? po.date : isoDate())}" required /></label>
           <label class="field"><span>Deliver To <b class="req">*</b></span><select name="warehouse" required>${warehouseOptions(firstWh, { includeBlank: false })}</select></label>
@@ -147,7 +153,23 @@ async function start() {
       if (v?.paymentTermsDays) form.paymentTerms.value = `${v.paymentTermsDays} Days`;
       setTaxType();
     });
-    form.warehouse.addEventListener("change", () => { form.destination.value = warehouseByCode(form.warehouse.value).destination || form.destination.value; });
+    form.warehouse.addEventListener("change", () => { form.destination.value = warehouseByCode(form.warehouse.value).destination || form.destination.value; showNext(); });
+    // Preview of the next number in the chosen series (the final number is assigned inside the save transaction).
+    const showNext = async () => {
+      const hint = form.querySelector("[data-nextno]");
+      if (!hint) return;
+      const s = PO_SERIES[form.series.value];
+      if (!s) { hint.textContent = "The number is assigned when the PO is saved."; return; }
+      const date = form.date.value || isoDate();
+      try {
+        const snap = await getDoc(doc(db, "counters", counterId(s.type, date)));
+        const next = snap.exists() ? Number(snap.data().next) || 1 : 1;
+        hint.textContent = `Next ${s.label} number (${numberPeriodLabel(s.type, date)}): ${formatNumber(s.type, next, { date, site: warehouseByCode(form.warehouse.value).docCode })} — confirmed when saved.`;
+      } catch { hint.textContent = "The number is assigned when the PO is saved."; }
+    };
+    form.series?.addEventListener("change", showNext);
+    form.date.addEventListener("change", showNext);
+    showNext();
     setTaxType();
 
     modal.el.querySelector("#savePo").addEventListener("click", async (event) => {
@@ -155,6 +177,7 @@ async function start() {
       const vendor = vendorOf();
       let lines;
       try {
+        if (!editing && !PO_SERIES[values.series]) throw new Error("Select the PO series (PH or Monthly).");
         if (!vendor) throw new Error("Select a vendor.");
         if (!values.date) throw new Error("Select the PO date.");
         if (!values.warehouse) throw new Error("Select the delivery location.");
@@ -190,10 +213,11 @@ async function start() {
             return { id: ref.id, poNo: cur.poNo };
           }
           const ref = doc(collection(db, "purchaseOrders"));
-          const number = await reserveNumber(tx, "PO", { date: values.date, site: wh.docCode });
+          const series = PO_SERIES[values.series];
+          const number = await reserveNumber(tx, series.type, { date: values.date, site: wh.docCode });
           commitNumber(tx, number, ref.id);
-          tx.set(ref, { ...data, poNo: number.number, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
-          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created PO ${number.number} · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
+          tx.set(ref, { ...data, poNo: number.number, series: values.series, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
+          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created PO ${number.number} (${series.label}) · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
           return { id: ref.id, poNo: number.number };
         });
         toast(`${saved.poNo} saved.`, "ok");
@@ -215,6 +239,8 @@ async function start() {
     const receipts = receiptSnap.docs.map((d) => normalizeReceipt({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
     const log = logSnap.docs.map((d) => d.data()).sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0));
     const inProcess = receipts.filter((r) => ["KANTA PENDING", "GRN PENDING"].includes(r.stage));
+    const onHold = receipts.filter(isOnHold);
+    const transportTotal = round(receipts.filter((r) => !["CANCELLED"].includes(r.stage)).reduce((s, r) => s + n(r.transportAmount), 0), 2);
     const editable = canEdit && po.status === "OPEN" && !po.lines.some((l) => (l.invoicedQty || 0) > 0);
     const closable = can("close") && OPEN_PO_STATUSES.includes(po.status);
     const modal = openModal({
@@ -227,7 +253,9 @@ async function start() {
           <div><span>PO Date</span><b>${fmtDate(po.date)}</b></div><div><span>Payment Terms</span><b>${esc(po.paymentTerms || "—")}</b></div>
           <div><span>Expected Delivery</span><b>${fmtDate(po.expectedDate)}</b></div><div><span>Created By</span><b>${esc(po.createdBy?.name || "—")}</b></div>
           <div><span>Vendor GSTIN</span><b>${esc(po.vendor?.gstin || "—")}</b></div><div><span>Tax</span><b>${po.intraState ? "CGST + SGST" : "IGST"}</b></div>
+          <div><span>PO Series</span><b>${esc(PO_SERIES[po.series]?.label || "—")}</b></div><div><span>Transport cost (internal, not on PO)</span><b>₹${money(transportTotal)}</b></div>
         </div>
+        ${onHold.length ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-hand"></i><div><b>${HOLD_TEXT}</b> — ${onHold.map((r) => `${esc(r.geNo)} (invoice ${esc(r.invoiceNo)})`).join(", ")}. Rejected quantity is not counted as received; the PO quantity stays pending. Other receipts on this PO are not affected.</div></div>` : ""}
         <div class="section-title">Item-wise tracking (Kanta is final)</div>
         <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Inward</th><th class="num">Awaiting Kanta</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
           ${po.lines.map((l) => {
@@ -239,13 +267,13 @@ async function start() {
           }).join("")}
         </tbody></table></div>
         <div class="section-title">Invoices / receipts (${receipts.length})</div>
-        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th>GRN No.</th><th>Stage</th></tr></thead><tbody>
+        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th>GRN No.</th><th>Transport (internal)</th><th>Stage</th><th>Accounts</th></tr></thead><tbody>
           ${receipts.flatMap((r) => r.lines.map((l, i) => {
             const v = l.kantaQty !== undefined ? round(l.kantaQty - l.grnQty) : null;
             return `<tr>${i === 0 ? `<td class="strong nowrap" rowspan="${r.lines.length}">${esc(r.geNo)}</td><td class="nowrap" rowspan="${r.lines.length}">${fmtDateTime(r.createdAt)}</td><td rowspan="${r.lines.length}">${esc(r.invoiceNo)}</td>` : ""}
               <td>${esc(l.name)}</td><td class="num">${qty(l.invoiceQty)}</td><td class="num">${l.grnQty !== undefined ? qty(l.grnQty) : "—"}</td><td class="num">${l.kantaQty !== undefined ? qty(l.kantaQty) : "—"}</td>
               <td class="num" style="color:${v < 0 ? "var(--danger)" : v > 0 ? "var(--success)" : "inherit"}">${v === null ? "—" : `${v > 0 ? "+" : ""}${qty(v)}`}</td>
-              ${i === 0 ? `<td class="nowrap" rowspan="${r.lines.length}">${esc(r.grn?.grnNo || "—")}</td><td rowspan="${r.lines.length}">${badge(r.stage === "COMPLETED" ? "INWARDED" : r.stage)}</td>` : ""}</tr>`;
+              ${i === 0 ? `<td class="nowrap" rowspan="${r.lines.length}">${esc(r.grn?.grnNo || "—")}</td><td class="small" rowspan="${r.lines.length}">${r.transportMode ? `${esc(TRANSPORT_MODES[r.transportMode])}${r.transportAmount !== null && r.transportAmount !== undefined ? `<div>₹${money(r.transportAmount)}</div>` : ""}` : "—"}</td><td rowspan="${r.lines.length}">${badge(receiptStageLabel(r))}${r.rejection ? `<div class="small muted">${esc(r.rejection.reason)}</div>` : ""}</td><td rowspan="${r.lines.length}">${accountsBadge(r)}</td>` : ""}</tr>`;
           })).join("")}
         </tbody></table></div>` : '<p class="muted">No material has arrived against this PO yet.</p>'}
         <div class="section-title">History</div>

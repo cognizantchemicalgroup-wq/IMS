@@ -7,6 +7,7 @@ import {
   reserveNumber, commitNumber, exportExcel, STATE_CODES
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
+import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js";
 import { piSpec, showDocument, safeFileName } from "./pdf.js";
 import { collection, doc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -69,11 +70,11 @@ async function start() {
   };
 
   /* ---------------- Editor ---------------- */
-  function openEditor(existing = null, { fromSo = null } = {}) {
+  function openEditor(existing = null, { fromSo = null, fromDraft = null } = {}) {
     if (!customers.filter((c) => c.active !== false).length) { toast("Add the customer first (Purchase → Vendors & Customers).", "error"); return; }
     const editing = Boolean(existing);
     const so = fromSo;
-    const d = existing || (so ? {
+    const d = existing || fromDraft || (so ? {
       customer: so.customer, refNo: so.customerPoNo || "", refDate: so.customerPoDate || "", placeOfSupply: so.placeOfSupply || "",
       dispatchFrom: dispatchFromOf(so.warehouse), shipTo: so.shipTo, notes: so.notes || "",
       termsDays: Number.parseInt(so.paymentTerms, 10) || "",
@@ -84,9 +85,10 @@ async function start() {
       title: editing ? `Edit ${d.piNo}` : so ? `Proforma Invoice for ${so.soNo}` : "New Proforma Invoice",
       size: "full",
       body: `<form id="piForm" novalidate>
-        ${editing || so ? "" : `<div class="notice" style="margin-bottom:14px"><label class="field" style="margin:0"><span>Copy from Sales Order (optional)</span><select name="fromSo"><option value="">— Standalone proforma invoice —</option>${openSos.map((o) => `<option value="${esc(o.id)}">${esc(o.soNo)} · ${esc(o.customer?.name)} · ₹${money(o.totals?.total)}</option>`).join("")}</select></label></div>`}
+        ${editing || so ? "" : `<div class="form-grid" style="margin-bottom:6px">${docTypeField("PI")}</div>`}
+        ${editing || so || fromDraft ? "" : `<div class="notice" style="margin-bottom:14px"><label class="field" style="margin:0"><span>Copy from Sales Order (optional)</span><select name="fromSo"><option value="">— Standalone proforma invoice —</option>${openSos.map((o) => `<option value="${esc(o.id)}">${esc(o.soNo)} · ${esc(o.customer?.name)} · ₹${money(o.totals?.total)}</option>`).join("")}</select></label></div>`}
         <div class="form-grid">
-        <label class="field span-2"><span>Customer (Bill To) <b class="req">*</b></span><select name="customerId"><option value="">Select customer…</option>${customers.filter((c) => c.active !== false || c.id === d.customer?.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${esc(c.id)}" ${c.id === d.customer?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
+        <label class="field span-2"><span>Customer / Party (Bill To) <b class="req">*</b></span><select name="customerId"><option value="">Select party…</option>${customers.filter((c) => c.active !== false || c.id === d.customer?.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => partyOption(c, d.customer?.id)).join("")}</select></label>
         <label class="field"><span>Invoice Date <b class="req">*</b></span><input type="date" name="date" value="${esc(d.date || isoDate())}" /></label>
         <label class="field"><span>Terms (days)</span><input type="number" min="0" step="1" name="termsDays" value="${esc(d.termsDays ?? "")}" /></label>
         <label class="field"><span>Due Date</span><input type="date" name="dueDate" value="${esc(d.dueDate || "")}" /></label>
@@ -130,6 +132,17 @@ async function start() {
     });
     syncCustomer();
     if (!form.dueDate.value) syncDue();
+    // Proforma Invoice ⇄ Sales Order: carry what was typed to the other document.
+    form.docType?.addEventListener("change", () => {
+      if (form.docType.value !== "SO") return;
+      const v = formValues(form);
+      const wh = state.warehouses.find((w) => dispatchFromOf(w.code) === v.dispatchFrom);
+      modal.close();
+      openOtherType("SO", {
+        customerId: v.customerId, date: v.date, refNo: v.refNo, refDate: v.refDate, placeOfSupply: v.placeOfSupply, warehouse: wh?.code || "",
+        shipToLines: v.shipTo ? v.shipTo.split("\n").map((x) => x.trim()).filter(Boolean) : [], notes: v.notes, termsDays: v.termsDays, lines: editor.draft()
+      });
+    });
 
     modal.el.querySelector("#savePi").addEventListener("click", async (event) => {
       const button = event.currentTarget;
@@ -227,6 +240,15 @@ async function start() {
 
   await load();
   document.body.dataset.loaded = "1";
+  // Arriving from a Sales Order form switched to "Proforma Invoice"
+  const draft = canEdit ? takeDraft("PI") : null;
+  if (draft) {
+    openEditor(null, { fromDraft: {
+      customer: { id: draft.customerId }, date: draft.date, refNo: draft.refNo, refDate: draft.refDate, placeOfSupply: draft.placeOfSupply,
+      dispatchFrom: dispatchFromOf(draft.warehouse), shipTo: draft.shipToLines?.length ? { addressLines: draft.shipToLines } : null,
+      notes: draft.notes, termsDays: draft.termsDays ?? "", lines: draft.lines || []
+    } });
+  }
   // Arriving from a Sales Order's "Create Proforma Invoice" button
   const soId = sessionStorage.getItem(FROM_SO_KEY);
   if (soId && canEdit) {

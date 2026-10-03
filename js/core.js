@@ -61,7 +61,8 @@ export const ITEM_CATEGORIES = ["Raw Material", "Finished Goods", "Packaging", "
 export const UNITS = ["KG", "MT", "LTR", "KL", "NOS", "DRUM", "CARBOY", "BAG", "BOX", "SET"];
 
 export const NUMBER_FORMATS = {
-  PO: "CCPL/PO/{FY}/{SEQ}",
+  POPH: "CCPL/PH/{SEQ}/{FY}",
+  POM: "CCPL/{MON} {YY}/{SEQ}",
   QT: "CCPL/QT/{FY}/{SEQ}",
   SO: "CCPL/SO/{FY}/{SEQ}",
   GE: "GE/{FY}/{SEQ}",
@@ -72,8 +73,19 @@ export const NUMBER_FORMATS = {
   OS: "OS/{FY}/{SEQ}",
   PI: "CCPL/PI/{FY}/{SEQ}"
 };
-export const NUMBER_PAD = { PO: 3, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4, PI: 3 };
-export const NUMBER_LABELS = { PO: "Purchase Order", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock", PI: "Proforma Invoice" };
+export const NUMBER_PAD = { POPH: 3, POM: 2, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4, PI: 3 };
+export const NUMBER_LABELS = { POPH: "Purchase Order · PH series", POM: "Purchase Order · Monthly series", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock", PI: "Proforma Invoice" };
+
+/** Number types that share one duplicate-check registry (a PO number can never repeat across the two PO series). */
+const NUMBER_FAMILY = { POPH: "PO", POM: "PO" };
+/** Purchase order number series chosen on each PO. */
+export const PO_SERIES = {
+  PH: { type: "POPH", label: "PH series", example: "CCPL/PH/055/26-27" },
+  MONTHLY: { type: "POM", label: "Monthly series", example: "CCPL/OCT 26/01 (restarts at 01 every month)" }
+};
+export const PARTY_TYPES = ["Customer", "Supplier", "Both"];
+/** How the material came in (recorded on each inward entry; internal only). */
+export const TRANSPORT_MODES = { SELF: "Self / CCPL Transport", PARTY: "Party Transport" };
 
 /** The only account that sees the private access / session audit page. */
 export const SUPER_ADMIN_EMAIL = "rupesh.mudliar@cognizantchemical.com";
@@ -88,7 +100,7 @@ export const isSuperAdmin = () => (state.user?.email || "").toLowerCase() === SU
 // viewer   – read only
 const PERMISSIONS = {
   admin: ["*"],
-  manager: ["commercial", "operations", "masters", "close"],
+  manager: ["commercial", "operations", "masters", "close", "warehouses"],
   operator: ["operations", "masters"],
   viewer: []
 };
@@ -281,7 +293,8 @@ export function badge(status) {
     SENT: "blue", ACCEPTED: "green", REJECTED: "red", CONVERTED: "indigo", EXPIRED: "gray",
     "PARTIALLY DISPATCHED": "amber", "KANTA PENDING": "amber", "GRN PENDING": "blue", "IN TRANSIT": "amber", RECEIVED: "green",
     POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray",
-    ISSUED: "blue", PAID: "green", OVERDUE: "red"
+    ISSUED: "blue", PAID: "green", OVERDUE: "red", INWARDED: "green", "VEHICLE REJECTED": "red", "PAYMENT HOLD — REJECTED INWARD": "red", "HOLD RESOLVED": "gray",
+    CUSTOMER: "blue", SUPPLIER: "indigo", BOTH: "gold"
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;
 }
@@ -375,12 +388,37 @@ export const warehouseOptions = (selected = "", { includeBlank = true } = {}) =>
 /* ------------------------------------------------------------------ */
 /* Document numbering (must be used inside a transaction)              */
 /* ------------------------------------------------------------------ */
-export function formatNumber(type, seq, { fy, site = "" }) {
-  const format = state.company.numberFormats?.[type] || NUMBER_FORMATS[type];
-  const pad = Number(state.company.numberPads?.[type]) || NUMBER_PAD[type] || 4;
-  return format.replace("{SEQ}", String(seq).padStart(pad, "0")).replace("{FY}", fy).replace("{SITE}", site || "HO");
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const asDate = (value) => (typeof value === "string" ? new Date(`${value}T00:00:00`) : toDate(value) || new Date());
+export const numberFormatOf = (type) => state.company.numberFormats?.[type] || NUMBER_FORMATS[type];
+export const numberPadOf = (type) => Number(state.company.numberPads?.[type]) || NUMBER_PAD[type] || 4;
+/** Monthly formats (with {MON} or {MM}) restart every month; all others restart every financial year. */
+export const isMonthlyFormat = (format) => /\{(MON|MM)\}/.test(format);
+/** Counter period for a document date: "2026-10" for monthly formats, "26-27" otherwise. */
+export function numberPeriod(type, date = isoDate(), format = numberFormatOf(type)) {
+  const d = asDate(date);
+  return isMonthlyFormat(format) ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}` : financialYear(d);
 }
-const numberKey = (type, number) => `${type}__${number.replace(/[^A-Za-z0-9-]+/g, "_")}`;
+/** Human label of the counter period: "OCT 26" or "FY 26-27". */
+export function numberPeriodLabel(type, date = isoDate(), format = numberFormatOf(type)) {
+  const d = asDate(date);
+  return isMonthlyFormat(format) ? `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}` : `FY ${financialYear(d)}`;
+}
+/**
+ * Tokens: {SEQ} running number · {FY} 26-27 · {MON} OCT · {MM} 10 · {YY} 26 · {YYYY} 2026 · {SITE} warehouse PO code.
+ */
+export function applyNumberFormat(format, seq, digits, { date = isoDate(), site = "" } = {}) {
+  const d = asDate(date);
+  return format.replace("{SEQ}", String(seq).padStart(digits, "0")).replace("{FY}", financialYear(d))
+    .replace("{MON}", MONTHS[d.getMonth()]).replace("{MM}", pad(d.getMonth() + 1))
+    .replace("{YYYY}", String(d.getFullYear())).replace("{YY}", String(d.getFullYear()).slice(-2))
+    .replace("{SITE}", site || "HO");
+}
+export function formatNumber(type, seq, { date = isoDate(), site = "" } = {}) {
+  return applyNumberFormat(numberFormatOf(type), seq, numberPadOf(type), { date, site });
+}
+const numberKey = (type, number) => `${NUMBER_FAMILY[type] || type}__${number.replace(/[^A-Za-z0-9-]+/g, "_")}`;
+export const counterId = (type, date = isoDate()) => `${type}_${numberPeriod(type, date)}`;
 
 /**
  * Read phase: returns a reservation to pass to commitNumber() after all other reads.
@@ -389,12 +427,12 @@ const numberKey = (type, number) => `${type}__${number.replace(/[^A-Za-z0-9-]+/g
  * the next free number is used instead.
  */
 export async function reserveNumber(tx, type, { date = isoDate(), site = "" } = {}) {
-  const fy = financialYear(date);
-  const ref = doc(db, "counters", `${type}_${fy}`);
+  const fy = numberPeriod(type, date);
+  const ref = doc(db, "counters", counterId(type, date));
   const snap = await tx.get(ref);
   let next = snap.exists() ? Number(snap.data().next) || 1 : 1;
   for (let attempt = 0; attempt < 25; attempt += 1, next += 1) {
-    const number = formatNumber(type, next, { fy, site });
+    const number = formatNumber(type, next, { date, site });
     const keyRef = doc(db, "docNumbers", numberKey(type, number));
     if (!(await tx.get(keyRef)).exists()) return { ref, keyRef, next, number, fy, type };
   }
@@ -507,7 +545,8 @@ const NAV = [
     ["inventory", "inventory.html", "fa-boxes-stacked", "Stock"],
     ["transfers", "transfers.html", "fa-right-left", "Stock Transfer"],
     ["adjustments", "adjustments.html", "fa-trash-can-arrow-up", "Write-off / Adjust"],
-    ["items", "items.html", "fa-flask", "Items & Packaging"]
+    ["items", "items.html", "fa-flask", "Items & Packaging"],
+    ["warehouses", "warehouses.html", "fa-warehouse", "Warehouses"]
   ] },
   { group: "Admin", items: [
     ["activity", "activity.html", "fa-clock-rotate-left", "Activity Log"],
@@ -677,3 +716,28 @@ export function normalizeReceipt(r) {
   if (r.grn) line.grnQty = Number(r.grn.acceptedQty) || 0;
   return { ...r, lines: [line] };
 }
+
+/* ------------------------------------------------------------------ */
+/* Receipt status for accounts (Tally remains the accounting system)   */
+/* ------------------------------------------------------------------ */
+export const HOLD_TEXT = "Payment Hold — Rejected Inward";
+const HOLD_HELP = "Operational instruction for accounts: do not pay this receipt. It does not block payment in Tally.";
+export const isOnHold = (r) => r.stage === "REJECTED" && r.paymentHold?.active !== false;
+/** What accounts should do with a receipt: { label, tone, help }. */
+export function accountsStatus(r) {
+  if (r.stage === "REJECTED") {
+    return isOnHold(r)
+      ? { label: HOLD_TEXT, tone: "red", help: HOLD_HELP }
+      : { label: "Hold resolved", tone: "gray", help: `Resolved by ${r.paymentHold?.resolvedBy?.name || ""}: ${r.paymentHold?.resolution || ""}` };
+  }
+  if (r.stage === "COMPLETED") return { label: "Payable as per Kanta", tone: "green", help: "Enter in Tally using the Kanta (payable) quantity." };
+  if (r.stage === "CANCELLED") return { label: "Cancelled — nothing payable", tone: "gray", help: "" };
+  return { label: "Not payable yet (awaiting GRN / Kanta)", tone: "amber", help: "Wait for Kanta before booking in Tally." };
+}
+export function accountsBadge(r) {
+  const s = accountsStatus(r);
+  return `<span class="badge ${s.tone}" title="${esc(s.help)}">${esc(s.label)}</span>`;
+}
+/** Stage label shown to users. */
+export const receiptStageLabel = (r) => (r.stage === "COMPLETED" ? "INWARDED" : r.stage === "REJECTED" ? "VEHICLE REJECTED" : r.stage);
+export const transportText = (r) => (r.transportMode ? `${TRANSPORT_MODES[r.transportMode] || r.transportMode}${Number.isFinite(r.transportAmount) && r.transportAmount !== null ? ` · ₹${money(r.transportAmount)}` : ""}` : "—");

@@ -1,6 +1,7 @@
 import {
   db, reportError, auth, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, busy, formValues, isAdmin,
-  listCollection, logActivity, fmtDateTime, financialYear, NUMBER_FORMATS, NUMBER_PAD, NUMBER_LABELS, formatNumber, badge
+  listCollection, logActivity, fmtDateTime, isoDate, NUMBER_FORMATS, NUMBER_LABELS, badge,
+  numberFormatOf, numberPadOf, applyNumberFormat, isMonthlyFormat, numberPeriod, numberPeriodLabel
 } from "./core.js";
 import { USING_EMULATOR } from "./firebase-config.js";
 import { doc, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -58,11 +59,13 @@ async function start() {
         <label class="field span-2"><span>Default proforma invoice terms</span><textarea name="piTerms" rows="5">${esc(c.piTerms)}</textarea></label>
         <div class="span-all" style="display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Save company details</button></div>
       </form></div></div>
-    <div class="card"><div class="card-head"><h3>Warehouses / units</h3><button class="btn sm" id="addWh"><i class="fa-solid fa-plus"></i> Add warehouse</button></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>Code</th><th>Name</th><th>PO code</th><th>Address (Deliver To)</th><th>Destination</th><th>Status</th><th></th></tr></thead><tbody id="whRows"></tbody></table></div></div>
-    <div class="card"><div class="card-head"><h3>Document numbering · FY ${financialYear()}</h3></div><div class="card-body">
-      <p class="small muted" style="margin-top:0">Set the format and the next number. <b>{FY}</b> = financial year (26-27), <b>{SEQ}</b> = running number, <b>{SITE}</b> = warehouse code (PO only). Example: <span class="mono">CCPL/PO/{FY}/{SEQ}</span> with 3 digits → <span class="mono">CCPL/PO/26-27/001</span>. The system issues numbers automatically and never issues the same number twice — if the next number is already used, it skips to the next free one.</p>
-      <table class="table"><thead><tr><th>Document</th><th style="min-width:220px">Format</th><th class="num" style="width:90px">Digits</th><th class="num" style="width:120px">Next number</th><th>Next will be</th><th></th></tr></thead><tbody id="numRows"></tbody></table></div></div>` : `
+    <div class="card"><div class="card-head"><h3>Warehouses / units</h3><a class="btn sm" href="warehouses.html"><i class="fa-solid fa-warehouse"></i> Manage warehouses</a></div>
+      <div class="card-body small muted">Create, rename and edit warehouse addresses, contact person and phone on the Warehouses page.</div></div>
+    <div class="card"><div class="card-head"><h3>Document numbering</h3></div><div class="card-body">
+      <p class="small muted" style="margin-top:0">Set the format, digits and the next number. Tokens: <b>{SEQ}</b> running number · <b>{FY}</b> financial year (26-27) · <b>{MON}</b> month (OCT) · <b>{MM}</b> month number (10) · <b>{YY}</b> year (26) · <b>{SITE}</b> warehouse PO code.
+      A format with <b>{MON}</b> or <b>{MM}</b> restarts at 1 every month (e.g. <span class="mono">CCPL/{MON} {YY}/{SEQ}</span> → <span class="mono">CCPL/OCT 26/01</span>, then <span class="mono">CCPL/NOV 26/01</span>); other formats restart every financial year.
+      "Next number" applies to the current period shown. Numbers are issued only when a document is saved and never twice — if a number is already used, the next free one is issued.</p>
+      <table class="table"><thead><tr><th>Document</th><th style="min-width:220px">Format</th><th class="num" style="width:90px">Digits</th><th>Period</th><th class="num" style="width:120px">Next number</th><th>Next will be</th><th></th></tr></thead><tbody id="numRows"></tbody></table></div></div>` : `
     <div class="card"><div class="card-head"><h3>Company</h3></div><div class="card-body"><div class="detail-grid"><div><span>Name</span><b>${esc(c.name)}</b></div><div><span>GSTIN</span><b>${esc(c.gstin)}</b></div><div><span>PAN</span><b>${esc(c.pan)}</b></div></div></div></div>`}`;
 
   page.querySelector("#pwForm").addEventListener("submit", async (e) => {
@@ -171,58 +174,23 @@ async function start() {
     } catch (error) { reportError(error); } finally { done(); }
   });
 
-  /* ---------- Warehouses ---------- */
-  const renderWh = () => {
-    page.querySelector("#whRows").innerHTML = state.warehouses.map((w) => `<tr><td class="mono">${esc(w.code)}</td><td class="strong">${esc(w.name)}</td><td>${esc(w.docCode)}</td><td class="small">${esc((w.addressLines || []).join(" "))}</td><td>${esc(w.destination || "")}</td><td>${badge(w.active === false ? "INACTIVE" : "ACTIVE")}</td><td><button class="btn sm" data-wh="${esc(w.code)}">Edit</button></td></tr>`).join("");
-  };
-  const editWh = (w = null) => {
-    const modal = openModal({
-      title: w ? `Edit ${w.name}` : "Add warehouse",
-      body: `<form id="whForm" class="form-grid" style="grid-template-columns:1fr 1fr">
-        <label class="field"><span>Code (permanent)</span><input name="code" value="${esc(w?.code || "")}" ${w ? "readonly" : ""} /></label>
-        <label class="field"><span>Name</span><input name="name" value="${esc(w?.name || "")}" /></label>
-        <label class="field"><span>PO number code ({SITE})</span><input name="docCode" value="${esc(w?.docCode || "")}" /></label>
-        <label class="field"><span>Destination (printed on PO)</span><input name="destination" value="${esc(w?.destination || "")}" /></label>
-        <label class="field span-2"><span>Delivery address (one line per row)</span><textarea name="addressLines" rows="4">${esc((w?.addressLines || []).join("\n"))}</textarea></label>
-        <label class="field"><span>Status</span><select name="active"><option value="true">Active</option><option value="false" ${w?.active === false ? "selected" : ""}>Inactive</option></select></label>
-        <label class="field"><span>Sort order</span><input type="number" name="sort" value="${esc(w?.sort ?? state.warehouses.length + 1)}" /></label></form>`,
-      footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="saveWh">Save</button>'
-    });
-    modal.el.querySelector("#saveWh").addEventListener("click", async () => {
-      const v = formValues(modal.el.querySelector("#whForm"));
-      const code = v.code.toUpperCase().replace(/[^A-Z0-9-]/g, "");
-      if (!code || !v.name) { toast("Code and name are required.", "error"); return; }
-      const data = { name: v.name, docCode: v.docCode.toUpperCase() || code, destination: v.destination, addressLines: v.addressLines.split("\n").map((s) => s.trim()).filter(Boolean), active: v.active === "true", sort: Number(v.sort) || 99, updatedAt: serverTimestamp() };
-      const batch = writeBatch(db);
-      batch.set(doc(db, "warehouses", code), data, { merge: true });
-      logActivity(batch, { module: "Settings", action: "WAREHOUSE", refNo: code, summary: `${w ? "Updated" : "Added"} warehouse ${v.name}` });
-      await batch.commit();
-      const i = state.warehouses.findIndex((x) => x.code === code);
-      if (i >= 0) state.warehouses[i] = { ...state.warehouses[i], ...data, code }; else state.warehouses.push({ ...data, code });
-      renderWh();
-      modal.close();
-      toast("Warehouse saved.", "ok");
-    });
-  };
-  page.querySelector("#whRows").addEventListener("click", (e) => { const b = e.target.closest("[data-wh]"); if (b) editWh(state.warehouses.find((w) => w.code === b.dataset.wh)); });
-  page.querySelector("#addWh").addEventListener("click", () => editWh());
-  renderWh();
-
   /* ---------- Numbering ---------- */
-  const fy = financialYear();
+  const today = isoDate();
   const renderNums = async () => {
     const counters = await listCollection("counters");
     page.querySelector("#numRows").innerHTML = Object.keys(NUMBER_FORMATS).map((k) => {
-      const next = counters.find((x) => x.id === `${k}_${fy}`)?.next || 1;
-      const format = state.company.numberFormats?.[k] || NUMBER_FORMATS[k];
-      const pad = state.company.numberPads?.[k] || NUMBER_PAD[k];
+      const format = numberFormatOf(k);
+      const pad = numberPadOf(k);
+      const next = counters.find((x) => x.id === `${k}_${numberPeriod(k, today, format)}`)?.next || 1;
       return `<tr data-k="${k}"><td class="strong">${esc(NUMBER_LABELS[k])}</td><td><input class="mono" data-fmt value="${esc(format)}" /></td><td><input type="number" min="1" max="8" step="1" data-pad value="${pad}" class="num" /></td>
-        <td><input type="number" min="1" step="1" value="${next}" data-num class="num" /></td><td class="mono small" data-preview>${esc(formatNumber(k, next, { fy, site: "PG" }))}</td><td><button class="btn sm" data-setnum="${k}">Save</button></td></tr>`;
+        <td class="small nowrap" data-period>${esc(numberPeriodLabel(k, today, format))}</td>
+        <td><input type="number" min="1" step="1" value="${next}" data-num class="num" /></td><td class="mono small" data-preview>${esc(applyNumberFormat(format, next, pad, { date: today, site: "PG" }))}</td><td><button class="btn sm" data-setnum="${k}">Save</button></td></tr>`;
     }).join("");
   };
   const previewRow = (tr) => {
     const fmt = tr.querySelector("[data-fmt]").value.trim(); const pad = Number(tr.querySelector("[data-pad]").value) || 1; const next = Number(tr.querySelector("[data-num]").value) || 1;
-    tr.querySelector("[data-preview]").textContent = fmt.replace("{SEQ}", String(next).padStart(pad, "0")).replace("{FY}", fy).replace("{SITE}", "PG");
+    tr.querySelector("[data-preview]").textContent = applyNumberFormat(fmt, next, pad, { date: today, site: "PG" });
+    tr.querySelector("[data-period]").textContent = numberPeriodLabel(tr.dataset.k, today, fmt);
   };
   page.querySelector("#numRows").addEventListener("input", (e) => { const tr = e.target.closest("tr[data-k]"); if (tr) previewRow(tr); });
   page.querySelector("#numRows").addEventListener("click", async (e) => {
@@ -236,14 +204,16 @@ async function start() {
     if (!Number.isInteger(pad) || pad < 1 || pad > 8) { toast("Digits must be between 1 and 8.", "error"); return; }
     if (!Number.isInteger(next) || next < 1) { toast("Enter a whole number.", "error"); return; }
     const preview = tr.querySelector("[data-preview]").textContent;
-    if (!(await confirmDialog(`${NUMBER_LABELS[k]}: next number for FY ${fy} will be ${preview}. Continue?`))) return;
+    const period = numberPeriod(k, today, format);
+    const periodLabel = numberPeriodLabel(k, today, format);
+    if (!(await confirmDialog(`${NUMBER_LABELS[k]}: next number for ${periodLabel} will be ${preview}${isMonthlyFormat(format) ? " (restarts at 1 every month)" : ""}. Continue?`))) return;
     try {
       const numberFormats = { ...(state.company.numberFormats || {}), [k]: format };
       const numberPads = { ...(state.company.numberPads || {}), [k]: pad };
       await runTransaction(db, async (tx) => {
-        tx.set(doc(db, "counters", `${k}_${fy}`), { next, type: k, fy, updatedAt: serverTimestamp() }, { merge: true });
+        tx.set(doc(db, "counters", `${k}_${period}`), { next, type: k, fy: period, updatedAt: serverTimestamp() }, { merge: true });
         tx.set(doc(db, "settings", "company"), { numberFormats, numberPads, updatedAt: serverTimestamp() }, { merge: true });
-        logActivity(tx, { module: "Settings", action: "NUMBERING", refNo: k, summary: `${NUMBER_LABELS[k]} numbering: format ${format}, ${pad} digits, next ${preview}` });
+        logActivity(tx, { module: "Settings", action: "NUMBERING", refNo: k, summary: `${NUMBER_LABELS[k]} numbering: format ${format}, ${pad} digits, next ${preview} (${periodLabel})` });
       });
       Object.assign(state.company, { numberFormats, numberPads });
       toast("Numbering saved.", "ok");

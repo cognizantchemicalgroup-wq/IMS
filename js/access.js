@@ -65,15 +65,16 @@ async function start() {
         </tbody></table></div></div>`;
     } else if (tab === "grnKanta") {
       const rows = timing();
-      const done = rows.filter((x) => x.r.kanta);
+      const done = rows.filter((x) => x.r.kanta && x.r.stage !== "REJECTED");
+      const waiting = rows.filter((x) => !x.r.kanta && x.r.stage === "KANTA PENDING");
       const avg = done.length ? Math.round(done.reduce((s, x) => s + x.waitMin, 0) / done.length) : 0;
       body.innerHTML = `<div class="grid cols-4" style="margin-bottom:16px"><div class="card kpi"><div class="label">Average GRN → Kanta</div><div class="value">${done.length ? duration(new Date(0), new Date(avg * 60000)) : "—"}</div><div class="hint">${done.length} completed</div></div>
-        <div class="card kpi"><div class="label">Waiting for Kanta now</div><div class="value">${rows.length - done.length}</div></div></div>
+        <div class="card kpi"><div class="label">Waiting for Kanta now</div><div class="value">${waiting.length}</div></div></div>
         <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Receipt / GRN</th><th>PO</th><th>Items</th><th>Invoice entered by</th><th>GRN by · at</th><th>Kanta by · at</th><th>GRN → Kanta</th></tr></thead><tbody>
         ${rows.map(({ r, waitMin }) => `<tr><td class="strong nowrap">${esc(r.geNo)}<div class="small muted">${esc(r.grn?.grnNo)}</div></td><td class="nowrap">${esc(r.poNo || "—")}</td><td class="small">${r.lines.map((l) => `${esc(l.name)} ${qty(l.grnQty)}${l.kantaQty !== undefined ? `→${qty(l.kantaQty)}` : ""} ${esc(l.unit)}`).join("<br>")}</td>
           <td class="small">${esc(r.createdBy?.name)}<div class="muted">${fmtDateTime(r.createdAt)}</div></td><td class="small">${esc(r.grn?.by?.name)}<div class="muted">${fmtDateTime(r.grn?.at)}</div></td>
-          <td class="small">${r.kanta ? `${esc(r.kanta.by?.name)}<div class="muted">${fmtDateTime(r.kanta.at)}</div>` : '<span class="badge amber">Pending</span>'}</td>
-          <td class="nowrap strong" style="color:${waitMin > 24 * 60 ? "var(--danger)" : "inherit"}">${r.kanta ? duration(r.grn.at, r.kanta.at) : `${duration(r.grn.at, new Date())} so far`}</td></tr>`).join("") || '<tr><td class="empty" colspan="7">No GRNs yet.</td></tr>'}
+          <td class="small">${r.kanta ? `${esc(r.kanta.by?.name)}<div class="muted">${fmtDateTime(r.kanta.at)}</div>` : r.stage === "REJECTED" ? "—" : r.stage === "CANCELLED" ? "—" : '<span class="badge amber">Pending</span>'}${r.stage === "REJECTED" ? `<div><span class="badge red">Vehicle rejected</span> <span class="muted">${esc(r.rejection?.by?.name || "")} · ${fmtDateTime(r.rejection?.at)}</span></div>` : ""}</td>
+          <td class="nowrap strong" style="color:${waitMin > 24 * 60 && r.stage === "KANTA PENDING" ? "var(--danger)" : "inherit"}">${r.kanta ? duration(r.grn.at, r.kanta.at) : r.stage === "KANTA PENDING" ? `${duration(r.grn.at, new Date())} so far` : "—"}</td></tr>`).join("") || '<tr><td class="empty" colspan="7">No GRNs yet.</td></tr>'}
         </tbody></table></div></div>`;
     } else {
       body.innerHTML = `<div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Date & time</th><th>User</th><th>Action</th><th>Reference</th><th>Details</th></tr></thead><tbody>
@@ -87,7 +88,7 @@ async function start() {
     let rows = [];
     if (tab === "users") rows = userRows().map(({ u, last, lastActive, count30 }) => ({ User: u.name, Email: u.email, Role: u.role, Active: u.active ? "Yes" : "No", "Last Login": last ? fmtDateTime(last.loginAt) : "", "Last Active": lastActive ? fmtDateTime(new Date(lastActive)) : "", "Last Logout": last?.logoutAt ? fmtDateTime(last.logoutAt) : "", "Logins (30 days)": count30 }));
     if (tab === "sessions") rows = sessions.map((s) => ({ User: s.userName, Email: s.email, Login: fmtDateTime(s.loginAt), "Last Active": fmtDateTime(s.lastActiveAt), Logout: s.logoutAt ? fmtDateTime(s.logoutAt) : "", "Ended By": s.endReason || "", Duration: duration(s.loginAt, s.logoutAt || s.lastActiveAt), Device: device(s.userAgent) }));
-    if (tab === "grnKanta") rows = timing().map(({ r }) => ({ Receipt: r.geNo, GRN: r.grn?.grnNo, PO: r.poNo, "Invoice By": r.createdBy?.name, "Invoice At": fmtDateTime(r.createdAt), "GRN By": r.grn?.by?.name, "GRN At": fmtDateTime(r.grn?.at), "Kanta By": r.kanta?.by?.name || "", "Kanta At": r.kanta ? fmtDateTime(r.kanta.at) : "", "GRN to Kanta": r.kanta ? duration(r.grn.at, r.kanta.at) : "Pending" }));
+    if (tab === "grnKanta") rows = timing().map(({ r }) => ({ Receipt: r.geNo, GRN: r.grn?.grnNo, PO: r.poNo, "Invoice By": r.createdBy?.name, "Invoice At": fmtDateTime(r.createdAt), "GRN By": r.grn?.by?.name, "GRN At": fmtDateTime(r.grn?.at), "Kanta By": r.kanta?.by?.name || "", "Kanta At": r.kanta ? fmtDateTime(r.kanta.at) : "", "GRN to Kanta": r.kanta ? duration(r.grn.at, r.kanta.at) : r.stage === "KANTA PENDING" ? "Pending" : "", "Vehicle Rejected": r.stage === "REJECTED" ? `${r.rejection?.by?.name || ""} ${fmtDateTime(r.rejection?.at)} — ${r.rejection?.reason || ""}` : "" }));
     if (tab === "edits") rows = inwardLog.map((a) => ({ "Date & Time": fmtDateTime(a.at), User: a.userName, Action: a.action, Reference: a.refNo, Details: a.summary }));
     if (!rows.length) { toast("Nothing to export."); return; }
     exportExcel(rows, `CCPL_Access_${tab}_${isoDate()}.xlsx`, tab);

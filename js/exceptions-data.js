@@ -1,5 +1,5 @@
 // "Needs attention" rules shared by the Exceptions page and the Dashboard.
-import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate } from "./core.js";
+import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate, isOnHold, HOLD_TEXT } from "./core.js";
 
 const n = (v) => Number(v) || 0;
 const daysSince = (value) => { const d = toDate(value) || (typeof value === "string" ? new Date(`${value}T00:00:00`) : null); return d ? Math.floor((Date.now() - d.getTime()) / 86400000) : 0; };
@@ -16,6 +16,11 @@ export function computeExceptions({ pos = [], receipts = [], adjustments = [], c
   const pendingOf = (p) => p.lines.filter((l) => n(l.qty) - n(l.receivedQty) > 0.0005).map((l) => `${l.name} ${qty(round(n(l.qty) - n(l.receivedQty)))} ${l.unit}`).join(", ");
 
   const groups = [
+    {
+      key: "payment-hold", title: HOLD_TEXT, icon: "fa-hand", tone: "red",
+      help: "Vehicles rejected at the gate / GRN / Kanta. Accounts must not pay these receipts until a manager resolves the hold (Tally is not blocked automatically).",
+      rows: recs.filter(isOnHold).map((r) => ({ ref: r.geNo, href: "inward.html", text: `${r.vendor?.name} — invoice ${r.invoiceNo}: ${r.lines.map((l) => `${l.name} ${qty(l.invoiceQty)} ${l.unit}`).join(", ")} · ${r.rejection?.reason || ""}`, meta: `${r.poNo || "Without PO"} · rejected by ${r.rejection?.by?.name || ""}`, days: daysSince(r.rejection?.at || r.createdAt) }))
+    },
     {
       key: "po-overdue", title: "PO pending too long", icon: "fa-hourglass-half", tone: "red",
       help: `Open POs past their expected delivery date, or older than ${overdueDays} days.`,

@@ -63,10 +63,13 @@ const server = http.createServer(async (req, res) => {
 /* ---------- browser (CDN libraries served from node_modules, same versions) ---------- */
 const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
-await context.route(/^https:\/\/www\.gstatic\.com\/firebasejs\/10\.12\.2\/(.+)$/, (route) => route.fulfill({ path: path.join(NM, "firebase", route.request().url().split("/").pop()), contentType: "text/javascript" }));
-await context.route(/pdfmake\/0\.2\.10\/(pdfmake\.min\.js|vfs_fonts\.js)$/, (route) => route.fulfill({ path: path.join(NM, "pdfmake", "build", route.request().url().split("/").pop()), contentType: "text/javascript" }));
-await context.route(/xlsx\/0\.18\.5\/xlsx\.full\.min\.js$/, (route) => route.fulfill({ path: path.join(NM, "xlsx", "dist", "xlsx.full.min.js"), contentType: "text/javascript" }));
-await context.route(/fonts\.googleapis\.com|fonts\.gstatic\.com|font-awesome/, (route) => route.fulfill({ body: "", contentType: "text/css" }));
+async function routeCdn(ctx) {
+  await ctx.route(/^https:\/\/www\.gstatic\.com\/firebasejs\/10\.12\.2\/(.+)$/, (route) => route.fulfill({ path: path.join(NM, "firebase", route.request().url().split("/").pop()), contentType: "text/javascript" }));
+  await ctx.route(/pdfmake\/0\.2\.10\/(pdfmake\.min\.js|vfs_fonts\.js)$/, (route) => route.fulfill({ path: path.join(NM, "pdfmake", "build", route.request().url().split("/").pop()), contentType: "text/javascript" }));
+  await ctx.route(/xlsx\/0\.18\.5\/xlsx\.full\.min\.js$/, (route) => route.fulfill({ path: path.join(NM, "xlsx", "dist", "xlsx.full.min.js"), contentType: "text/javascript" }));
+  await ctx.route(/fonts\.googleapis\.com|fonts\.gstatic\.com|font-awesome/, (route) => route.fulfill({ body: "", contentType: "text/css" }));
+}
+await routeCdn(context);
 
 const page = await context.newPage();
 const consoleErrors = [];
@@ -92,7 +95,8 @@ async function expectToast(kind = "ok") {
   const t = page.locator(".toast").last();
   await t.waitFor({ timeout: 20000 });
   const text = await t.textContent();
-  const actual = (await t.getAttribute("class")).includes("error") ? "error" : "ok";
+  const cls = await t.getAttribute("class");
+  const actual = cls.includes("error") ? "error" : cls.includes("ok") ? "ok" : "info";
   await page.evaluate(() => document.querySelectorAll(".toast").forEach((x) => x.remove()));
   if (actual !== kind) throw new Error(`Expected ${kind} toast but got ${actual}: ${text}`);
   return text;
@@ -109,10 +113,10 @@ async function addMaster(file, values, selects = {}) {
 const one = async (col, field, value) => { const s = await adb.collection(col).where(field, "==", value).get(); return s.docs[0] ? { id: s.docs[0].id, ...s.docs[0].data() } : null; };
 const stockOf = async (wh, itemName) => { const s = await adb.collection("inventory").where("warehouse", "==", wh).where("itemName", "==", itemName).get(); return s.empty ? 0 : s.docs[0].data().qty; };
 
-async function createPo(vendor, warehouse, lines) {
-  await goto("purchase-orders.html");
-  await page.click("#newPo");
-  const m = modal();
+async function fillPo(pg, { vendor, warehouse, lines, series = "PH", date }) {
+  const m = pg.locator(".modal-backdrop").last();
+  await m.locator("select[name=series]").selectOption(series);
+  if (date) await m.locator("input[name=date]").fill(date);
   await selectContaining(m.locator("select[name=vendorId]"), vendor);
   await m.locator("select[name=warehouse]").selectOption(warehouse);
   for (let i = 0; i < lines.length; i += 1) {
@@ -122,6 +126,12 @@ async function createPo(vendor, warehouse, lines) {
     await row.locator("input[data-f=qty]").fill(String(lines[i].qty));
     await row.locator("input[data-f=rate]").fill(String(lines[i].rate));
   }
+  return m;
+}
+async function createPo(vendor, warehouse, lines, { series = "PH", date } = {}) {
+  await goto("purchase-orders.html");
+  await page.click("#newPo");
+  const m = await fillPo(page, { vendor, warehouse, lines, series, date });
   await m.locator("#savePo").click();
   const text = await expectToast();
   await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
@@ -133,7 +143,7 @@ async function createPo(vendor, warehouse, lines) {
 }
 
 // Invoice / receipt against a PO: qtys = { "Item name": qty }
-async function receiptEntry({ poNo, invoiceNo, qtys, warehouse }) {
+async function receiptEntry({ poNo, invoiceNo, qtys, warehouse, transport = "PARTY", amount = "", rejectReason = "", confirm = false }) {
   await goto("inward.html");
   await page.click("#newEntry");
   const m = modal();
@@ -142,9 +152,18 @@ async function receiptEntry({ poNo, invoiceNo, qtys, warehouse }) {
   await m.locator("input[name=invoiceNo]").fill(invoiceNo);
   for (const [name, q] of Object.entries(qtys)) await m.locator("#itemArea tr", { hasText: name }).locator("input[data-line]").fill(String(q));
   await m.locator("input[name=vehicleNo]").fill("MH46AB1234");
+  await m.locator("select[name=transportMode]").selectOption(transport);
+  if (amount !== "") await m.locator("input[name=transportAmount]").fill(String(amount));
+  if (rejectReason) {
+    await m.locator("select[name=entryStatus]").selectOption("REJECTED");
+    await m.locator("input[name=rejectReason]").fill(rejectReason);
+  }
   await m.locator("#saveGe").click();
-  await expectToast();
-  return one("receipts", "invoiceNo", invoiceNo);
+  if (confirm) await page.locator(".modal-backdrop").last().locator("#confirmOk").click();
+  await expectToast(rejectReason ? "info" : "ok");
+  const s = await adb.collection("receipts").where("invoiceNo", "==", invoiceNo).get();
+  const docs = s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+  return docs[0];
 }
 // GRN: qtys = { "Item name": grnQty } (defaults to invoice qty)
 async function grnStep(receipt, qtys = {}) {
@@ -173,6 +192,10 @@ async function receiveFully(poNo, invoices) {
     await kantaStep(r, kantaQtys || {});
   }
 }
+/** PDF text via python3 + pymupdf when available (optional check). */
+function pdfText(file) {
+  try { return execFileSync("python3", ["-c", "import sys,fitz;print(''.join(p.get_text() for p in fitz.open(sys.argv[1])))", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; }
+}
 const lineOf = (po, name) => po.lines.find((l) => l.name.startsWith(name));
 const round = (v, dp = 3) => Math.round(v * 10 ** dp) / 10 ** dp;
 
@@ -200,11 +223,11 @@ try {
 
   /* ================= 2. Masters ================= */
   console.log("\n2. Masters (vendors & customers in one list, items)");
-  await addMaster("parties.html", { name: "Pyramid Technoplast Limited", gstin: "27AACCP5074E3ZF", address1: "GAT NO. 420/1, 420/2, 420/3, KHANIVALI", address2: "Khanivali", city: "Palghar", pincode: "401204", paymentTermsDays: 30 });
+  await addMaster("parties.html", { name: "Pyramid Technoplast Limited", gstin: "27AACCP5074E3ZF", address1: "GAT NO. 420/1, 420/2, 420/3, KHANIVALI", address2: "Khanivali", city: "Palghar", pincode: "401204", paymentTermsDays: 30 }, { partyType: "Supplier" });
   const vendor = await one("parties", "name", "Pyramid Technoplast Limited");
-  check(vendor?.stateCode === "27" && vendor?.pan === "AACCP5074E" && vendor?.state === "Maharashtra", "vendor GSTIN auto-fills state code, state and PAN");
-  await addMaster("parties.html", { name: "Gujarat Acids Pvt Ltd", gstin: "24AABCG1234H1Z5", city: "Vapi", paymentTermsDays: 45 });
-  await addMaster("parties.html", { name: "Deepak Fertilisers Ltd", gstin: "27AAACD1234E1ZX", city: "Taloja" });
+  check(vendor?.stateCode === "27" && vendor?.pan === "AACCP5074E" && vendor?.state === "Maharashtra" && vendor.partyType === "Supplier", "vendor GSTIN auto-fills state code, state and PAN; party type Supplier");
+  await addMaster("parties.html", { name: "Gujarat Acids Pvt Ltd", gstin: "24AABCG1234H1Z5", city: "Vapi", paymentTermsDays: 45 }, { partyType: "Supplier" });
+  await addMaster("parties.html", { name: "Deepak Fertilisers Ltd", gstin: "27AAACD1234E1ZX", city: "Taloja" }, { partyType: "Customer" });
   await addMaster("items.html", { name: "Apple", hsn: "08081000", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
   await addMaster("items.html", { name: "Methanol", hsn: "29051100", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
   await addMaster("items.html", { name: "IPA", hsn: "29051220", gstRate: 18 }, { category: "Raw Material", unit: "KG" });
@@ -212,54 +235,111 @@ try {
   // Duplicate protection
   await goto("parties.html"); await page.click("#addBtn");
   await modal().locator("[name=name]").fill("Another name"); await modal().locator("[name=gstin]").fill("27AACCP5074E3ZF");
+  await modal().locator("[name=partyType]").selectOption("Customer");
   await modal().locator("#saveMaster").click();
-  check((await expectToast("error")).includes("already exists"), "duplicate vendor GSTIN is blocked");
+  check((await expectToast("error")).includes("already exists"), "duplicate party GSTIN is blocked (same company is one record)");
   await closeAllModals();
-  // Excel template + import
-  await goto("parties.html");
-  const [tpl] = await Promise.all([page.waitForEvent("download"), page.click("#templateBtn")]);
-  await tpl.saveAs(path.join(OUT, tpl.suggestedFilename()));
+
+  /* ---- 2a. Bulk import: template, preview, row/column errors, duplicates, skip/update, report ---- */
+  console.log("\n2a. Party bulk import");
   const XLSX = (await import(path.join(NM, "xlsx", "xlsx.mjs"))).default ?? await import(path.join(NM, "xlsx", "xlsx.mjs"));
   XLSX.set_fs?.(await import("node:fs"));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ["Name *", "GSTIN", "City", "Payment Terms (days)"],
-    ["Bulk Vendor One", "27AAACB1111A1Z1", "Pune", 30],
-    ["Bulk Vendor Two", "", "Mumbai", 15],
-    ["Broken Vendor", "NOT-A-GSTIN", "X", 10]
-  ]), "Vendors");
-  const importFile = path.join(OUT, "vendor-import.xlsx");
-  XLSX.writeFile(wb, importFile);
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.click("#importBtn")]);
-  await chooser.setFiles(importFile);
-  await modal().locator("#confirmImport").waitFor();
-  check((await modal().textContent()).includes("2 of 3 rows are valid"), "Excel import preview flags the invalid GSTIN row");
+  await goto("parties.html");
+  await page.click("#templateBtn");
+  check((await modal().textContent()).includes("Required") && (await modal().textContent()).includes("Optional"), "template guide lists every column as Required / Optional");
+  const [tpl] = await Promise.all([page.waitForEvent("download"), modal().locator("#tplXlsx").click()]);
+  const tplFile = path.join(OUT, tpl.suggestedFilename());
+  await tpl.saveAs(tplFile);
+  const [tplCsv] = await Promise.all([page.waitForEvent("download"), modal().locator("#tplCsv").click()]);
+  await tplCsv.saveAs(path.join(OUT, tplCsv.suggestedFilename()));
+  await closeAllModals();
+  const tplWb = XLSX.readFile(tplFile);
+  const header = XLSX.utils.sheet_to_json(tplWb.Sheets[tplWb.SheetNames[0]], { header: 1 })[0];
+  check(header[0] === "Party Name (Required)" && header[1] === "Party Type (Required)" && header.includes("GSTIN (Optional)") && tplWb.SheetNames.includes("Instructions"), `Excel template header: ${header.slice(0, 4).join(" | ")}…`);
+  check((await readFile(path.join(OUT, tplCsv.suggestedFilename()), "utf8")).includes('"Party Name (Required)","Party Type (Required)"'), "CSV template downloaded with the same columns");
+  // Sample file arranged in the template format
+  const col = (h) => header.indexOf(h);
+  const rowOf = (values) => { const r = header.map(() => ""); Object.entries(values).forEach(([h, v]) => { r[col(h)] = v; }); return r; };
+  const sampleRows = [
+    { "Party Name (Required)": "Bulk Customer One", "Party Type (Required)": "Customer", "GSTIN (Optional)": "27AAACB1111A1Z1", "City (Optional)": "Pune", "Payment Terms (days) (Optional)": 30 },
+    { "Party Name (Required)": "Bulk Supplier Two", "Party Type (Required)": "Vendor", "City (Optional)": "Mumbai", "Payment Terms (days) (Optional)": "Net 15", "Bank A/c No. (Optional)": 484105000428 },
+    { "Party Name (Required)": "Broken Party", "Party Type (Required)": "Customer", "GSTIN (Optional)": "NOT-A-GSTIN" },
+    { "Party Name (Required)": "", "Party Type (Required)": "Supplier", "City (Optional)": "Nowhere" },
+    { "Party Name (Required)": "Wrong Type Co", "Party Type (Required)": "Distributor" },
+    { "Party Name (Required)": "Delhi Traders", "Party Type (Required)": "Both", "GSTIN (Optional)": "07AAACD5555F1Z2", "State Code (Optional)": 7 },
+    { "Party Name (Required)": "Pyramid Technoplast Ltd.", "Party Type (Required)": "Customer", "GSTIN (Optional)": "27AACCP5074E3ZF", "Phone (Optional)": 9811111111 },
+    { "Party Name (Required)": "Bulk Customer One", "Party Type (Required)": "Supplier", "GSTIN (Optional)": "27AAACB1111A1Z1", "Email (Optional)": "accounts@bulk1.test" },
+    { "Party Name (Required)": "Mismatch State", "Party Type (Required)": "Customer", "GSTIN (Optional)": "27AAACM1234A1Z5", "State Code (Optional)": "24" }
+  ];
+  const sampleWb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(sampleWb, XLSX.utils.aoa_to_sheet([header, ...sampleRows.map(rowOf)]), "Vendors & Customers");
+  const sampleFile = path.join(OUT, "sample-party-import.xlsx");
+  XLSX.writeFile(sampleWb, sampleFile);
+  const importParties = async (file) => {
+    await goto("parties.html");
+    const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.click("#importBtn")]);
+    await chooser.setFiles(file);
+    await modal().locator("#confirmImport").waitFor();
+    return modal().textContent();
+  };
+  let preview = await importParties(sampleFile);
+  const errText = await modal().locator("#errorTable").textContent();
+  check(/4GSTIN \(Optional\)Broken PartyGSTIN "NOT-A-GSTIN" is not a valid/.test(errText) && /5Party Name \(Required\)/.test(errText) && /6Party Type \(Required\)Wrong Type Co/.test(errText) && /10State Code \(Optional\)Mismatch State/.test(errText),
+    "preview lists each error by row and column (row 4 GSTIN, row 5 name, row 6 type, row 10 state code)");
+  check(preview.includes("1 duplicate row merged") && /New\s*3/.test(preview) && /Already in the ERP\s*1/.test(preview) && /With errors\s*4/.test(preview), "preview: 3 new, 1 already existing, 4 with errors, 1 duplicate in the file merged");
+  await page.screenshot({ path: path.join(OUT, "10-party-import-preview.png"), fullPage: true });
+  await modal().locator("input[name=dupMode][value=update]").check();
   await modal().locator("#confirmImport").click();
-  await expectToast();
-  check(Boolean(await one("parties", "name", "Bulk Vendor Two")) && !(await one("parties", "name", "Broken Vendor")), "valid Excel rows imported, invalid row skipped");
+  await page.locator("#importReport").waitFor();
+  const reportOf = async () => Object.fromEntries(await Promise.all(["added", "updated", "skipped", "failed"].map(async (k) => [k, Number(await page.locator(`#importReport [data-count=${k}]`).textContent())])));
+  let report = await reportOf();
+  check(report.added === 3 && report.updated === 1 && report.skipped === 0 && report.failed === 4, `import report: ${JSON.stringify(report)}`);
+  await closeAllModals();
+  const bulk1 = await one("parties", "name", "Bulk Customer One");
+  const delhi = await one("parties", "name", "Delhi Traders");
+  const pyramid = await one("parties", "gstin", "27AACCP5074E3ZF");
+  const bulk2 = await one("parties", "name", "Bulk Supplier Two");
+  check(bulk1?.partyType === "Both" && bulk1.email === "accounts@bulk1.test", "same party as Customer and Supplier in the file → one record, type Both");
+  check(delhi?.stateCode === "07" && delhi.state === "Delhi", "State Code 7 (Excel dropped the 0) is read as 07 Delhi");
+  check(pyramid.partyType === "Both" && pyramid.phone === "9811111111" && pyramid.address1.startsWith("GAT NO") && pyramid.name === "Pyramid Technoplast Limited", "existing supplier updated: becomes Both, phone added, blank cells did not erase its address");
+  check(bulk2?.partyType === "Supplier" && bulk2.paymentTermsDays === 15 && bulk2.bankAccount === "484105000428", "\"Vendor\" → Supplier, \"Net 15\" → 15 days, long bank a/c number kept exact");
+  check(!(await one("parties", "name", "Broken Party")) && !(await one("parties", "name", "Wrong Type Co")), "rows with errors are not imported");
+  preview = await importParties(sampleFile);
+  await modal().locator("#confirmImport").click();
+  await page.locator("#importReport").waitFor();
+  report = await reportOf();
+  check(report.added === 0 && report.updated === 0 && report.skipped === 4 && report.failed === 4, `same file again with "Skip": ${JSON.stringify(report)} — no duplicates created`);
+  await closeAllModals();
+  // CSV in the template format (text cells keep leading zeros)
+  const csvFile = path.join(OUT, "sample-party-import.csv");
+  await writeFile(csvFile, `${header.map((h) => `"${h}"`).join(",")}\r\n${rowOf({ "Party Name (Required)": "CSV Chemicals LLP", "Party Type (Required)": "customer", "State Code (Optional)": "09", "PIN Code (Optional)": "201301", "Email (Optional)": "a@csv.test, b@csv.test" }).map((v) => `"${v}"`).join(",")}\r\n`);
+  await importParties(csvFile);
+  await modal().locator("#confirmImport").click();
+  await page.locator("#importReport").waitFor();
+  const csvParty = await one("parties", "name", "CSV Chemicals LLP");
+  check(csvParty?.partyType === "Customer" && csvParty.stateCode === "09" && csvParty.state === "Uttar Pradesh", "CSV import works (type, state code 09 → Uttar Pradesh, two emails)");
+  await closeAllModals();
   // Zoho Books export (same headers as the real Vendors export): duplicates by GSTIN merge, Inactive carried over
   const zoho = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(zoho, XLSX.utils.json_to_sheet([
-    { "Contact ID": "Z1", "Display Name": "SAMPLE  CHEM PVT LTD", "Company Name": "SAMPLE CHEM PVT LTD", "EmailID": "", "MobilePhone": "", "Status": "Active", "Payment Terms": "60", "GST Identification Number (GSTIN)": "27AACCS1234C1ZV", "Billing Address": "GALA NO 9, UNIQUE INDL ESTATE", "Billing Street2": "OPP. TALKIES\r\nMULUND WEST", "Billing City": "MUMBAI", "Billing State": "Maharashtra", "Billing Code": "400080" },
+    { "Contact ID": "Z1", "Display Name": "SAMPLE  CHEM PVT LTD", "Company Name": "SAMPLE CHEM PVT LTD", "EmailID": "", "MobilePhone": "", "Status": "Active", "Payment Terms": "60", "GST Identification Number (GSTIN)": "27AACCS1234C1ZV", "Billing Address": "GALA NO 9, UNIQUE INDL ESTATE", "Billing Street2": "OPP. TALKIES\r\nMULUND WEST", "Billing City": "MUMBAI", "Billing State": "Maharashtra", "Billing Code": "400080", "Vendor Bank Name": "" },
     { "Contact ID": "Z2", "Display Name": "Sample Chem-Pvt.Ltd.", "EmailID": "accounts@sample.test", "MobilePhone": "9800011111", "Status": "Active", "Payment Terms": "", "GST Identification Number (GSTIN)": "27AACCS1234C1ZV" },
     { "Contact ID": "Z3", "Display Name": "Old Supplier", "Status": "Inactive", "Payment Terms": "30", "GST Identification Number (GSTIN)": "" },
     { "Contact ID": "Z4", "Display Name": "Typo Traders", "Status": "Active", "GST Identification Number (GSTIN)": "27ALPPJ2647C222" }
   ]), "Vendors");
   const zohoFile = path.join(OUT, "zoho-vendors.xlsx");
   XLSX.writeFile(zoho, zohoFile);
-  const [chooser2] = await Promise.all([page.waitForEvent("filechooser"), page.click("#importBtn")]);
-  await chooser2.setFiles(zohoFile);
-  await modal().locator("#confirmImport").waitFor();
-  const zPreview = await modal().textContent();
-  check(zPreview.includes("Zoho Books export detected") && zPreview.includes("2 of 3 rows are valid") && zPreview.includes("1 duplicate row was merged"), "Zoho export recognised: duplicate GSTIN merged, bad GSTIN flagged");
+  const zPreview = await importParties(zohoFile);
+  check(zPreview.includes("Zoho Books export detected") && /New\s*2/.test(zPreview) && /With errors\s*1/.test(zPreview) && zPreview.includes("1 duplicate row merged") && zPreview.includes("GST Identification Number (GSTIN)"), "Zoho export recognised: duplicate GSTIN merged, bad GSTIN flagged by its Zoho column");
   await modal().locator("#confirmImport").click();
-  await expectToast();
+  await page.locator("#importReport").waitFor();
+  await closeAllModals();
   const sample = await one("parties", "gstin", "27AACCS1234C1ZV");
-  check(sample?.name === "SAMPLE CHEM PVT LTD" && sample.email === "accounts@sample.test" && sample.phone === "9800011111" && sample.paymentTermsDays === 60 && sample.address2 === "OPP. TALKIES, MULUND WEST", "merged party keeps the most complete details from both rows");
+  check(sample?.name === "SAMPLE CHEM PVT LTD" && sample.email === "accounts@sample.test" && sample.phone === "9800011111" && sample.paymentTermsDays === 60 && sample.address2 === "OPP. TALKIES, MULUND WEST" && sample.partyType === "Supplier", "merged party keeps the most complete details from both rows (Zoho vendor → Supplier)");
   check((await one("parties", "name", "Old Supplier"))?.active === false, "Inactive status from Zoho carried over");
 
-  /* ================= 3. Numbering ================= */
-  console.log("\n3. Number format CCPL/PO/26-27/001");
+  /* ================= 3. Numbering: PH series and Monthly series ================= */
+  console.log("\n3. PO series: PH (CCPL/PH/055/26-27) and Monthly (CCPL/OCT 26/01)");
   const setNumbering = async (type, format, next, digits = 3) => {
     await goto("settings.html");
     const row = page.locator(`#numRows tr[data-k="${type}"]`);
@@ -270,18 +350,20 @@ try {
     await modal().locator("#confirmOk").click();
     await expectToast();
   };
-  await setNumbering("PO", "CCPL/PO/{FY}/{SEQ}", 1);
+  await setNumbering("POPH", "CCPL/PH/{SEQ}/{FY}", 55);
 
   /* ================= 4. PO for 10 KG apples: invoice → GRN → Kanta ================= */
   console.log("\n4. Apple PO: 5 + 5, Kanta 4.8 on the second");
   const applePo = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 10, rate: 100 }]);
-  check(applePo.poNo === "CCPL/PO/26-27/001", `PO number uses the set format (${applePo.poNo})`);
+  check(applePo.poNo === "CCPL/PH/055/26-27", `PH series starts at the configured number: ${applePo.poNo}`);
   check((await readFile(applePo.pdf)).subarray(0, 5).toString() === "%PDF-", "PO PDF downloaded");
   let po = await one("purchaseOrders", "poNo", applePo.poNo);
   check(near(po.totals.subTotal, 1000) && near(po.totals.total, 1180) && po.totals.taxes.map((t) => t.kind).join() === "CGST,SGST", "PO totals: 1000 + CGST 90 + SGST 90 = 1180");
 
-  const r1 = await receiptEntry({ poNo: applePo.poNo, invoiceNo: "INV-A1", qtys: { Apple: 5 } });
+  const r1 = await receiptEntry({ poNo: applePo.poNo, invoiceNo: "INV-A1", qtys: { Apple: 5 }, transport: "SELF", amount: 4500 });
+  check(r1.transportMode === "SELF" && r1.transportAmount === 4500 && r1.createdBy?.name === "Test Admin" && r1.createdAt, "inward records Self / CCPL Transport ₹4,500 with created by / date-time");
   po = await one("purchaseOrders", "poNo", applePo.poNo);
+  check(near(po.totals.total, 1180), "transport amount is not added to the PO total");
   check(po.status === "PARTIALLY RECEIVED" && lineOf(po, "Apple").invoicedQty === 5 && (await stockOf("PG-106", "Apple")) === 0, "invoice entered → PARTIALLY RECEIVED, no stock yet");
   await grnStep(r1);
   po = await one("purchaseOrders", "poNo", applePo.poNo);
@@ -304,6 +386,7 @@ try {
   await selectContaining(modal().locator("select[name=poId]"), applePo.poNo);
   await modal().locator("input[name=invoiceNo]").fill("INV-A2");
   await modal().locator("#itemArea tr", { hasText: "Apple" }).locator("input[data-line]").fill("1");
+  await modal().locator("select[name=transportMode]").selectOption("PARTY");
   await modal().locator("#saveGe").click();
   check((await expectToast("error")).includes("already entered"), "same invoice cannot be entered twice");
   await closeAllModals();
@@ -312,6 +395,15 @@ try {
   await modal().locator("#closePo").waitFor();
   const detailText = await modal().textContent();
   check(detailText.includes("INV-A1") && detailText.includes("INV-A2") && detailText.includes("Kanta Qty") && detailText.includes("-0.2"), "PO detail shows PO/GRN/Kanta/Short/Inward/Pending and every invoice");
+  check(detailText.includes("Transport cost (internal, not on PO)₹4,500.00") && detailText.includes("Self / CCPL Transport"), "PO detail shows the transport cost internally");
+  await modal().locator("#pdfPo").click();
+  await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
+  const [poAgain] = await Promise.all([page.waitForEvent("download"), page.click("#pdfDownload")]);
+  const poAgainFile = path.join(OUT, `after-inward-${poAgain.suggestedFilename()}`);
+  await poAgain.saveAs(poAgainFile);
+  await page.keyboard.press("Escape");
+  const poPdfText = pdfText(poAgainFile);
+  check(poPdfText === null || (!poPdfText.includes("4,500") && !poPdfText.includes("Self / CCPL") && poPdfText.includes("1,180.00")), `PO PDF after inward has no transport amount and the same total${poPdfText === null ? " (text check skipped: python3 + pymupdf not installed)" : ""}`);
   await page.screenshot({ path: path.join(OUT, "02-po-detail-partial.png") });
   await modal().locator("#closePo").click();
   await page.locator("#confirmInput").fill("Vendor cannot supply the balance 0.2 KG");
@@ -346,7 +438,7 @@ try {
   console.log("\n5. Packaging PO (M S Drum) completes automatically");
   const drumPo = await createPo("Pyramid", "PG-106", [{ item: "M S Drum", qty: 200, rate: 1810 }]);
   po = await one("purchaseOrders", "poNo", drumPo.poNo);
-  check(po.poNo === "CCPL/PO/26-27/003" && near(po.totals.total, 427160), `drum PO ${po.poNo} total Rs.427,160 (matches your sample PO)`);
+  check(po.poNo === "CCPL/PH/057/26-27" && near(po.totals.total, 427160), `drum PO ${po.poNo} total Rs.427,160 (matches your sample PO)`);
   await receiveFully(drumPo.poNo, [["INV-D1", { "M S Drum": 100 }], ["INV-D2", { "M S Drum": 100 }]]);
   po = await one("purchaseOrders", "poNo", drumPo.poNo);
   check(po.status === "COMPLETED" && po.lines[0].receivedQty === 200, "two invoices of 100 → PO COMPLETED automatically");
@@ -363,9 +455,61 @@ try {
 
   /* ================= 6b. Duplicate-proof numbering ================= */
   console.log("\n6b. Numbering never repeats");
-  await setNumbering("PO", "CCPL/PO/{FY}/{SEQ}", 2);
+  await setNumbering("POPH", "CCPL/PH/{SEQ}/{FY}", 56);
   const dupTest = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 1, rate: 1 }]);
-  check(dupTest.poNo === "CCPL/PO/26-27/005", `counter set back to 002 by mistake → system skips used numbers and issues ${dupTest.poNo}`);
+  check(dupTest.poNo === "CCPL/PH/059/26-27", `counter set back to 056 by mistake → system skips used numbers and issues ${dupTest.poNo}`);
+
+  /* ================= 6b-2. Monthly series, month change, edit keeps number, simultaneous POs ================= */
+  console.log("\n6b-2. Monthly PO series");
+  const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const now = new Date();
+  const monthLabel = (d) => `${MON[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`;
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const m1 = await createPo("Deepak", "PG-153", [{ item: "IPA", qty: 100, rate: 95 }], { series: "MONTHLY" });
+  const m2 = await createPo("Gujarat Acids", "PG-153", [{ item: "IPA", qty: 50, rate: 95 }], { series: "MONTHLY" });
+  check(m1.poNo === `CCPL/${monthLabel(now)}/01` && m2.poNo === `CCPL/${monthLabel(now)}/02`, `Monthly series: ${m1.poNo}, ${m2.poNo}`);
+  const m3 = await createPo("Deepak", "PG-153", [{ item: "IPA", qty: 10, rate: 95 }], { series: "MONTHLY", date: iso(nextMonth) });
+  check(m3.poNo === `CCPL/${monthLabel(nextMonth)}/01`, `PO dated next month restarts at 01: ${m3.poNo}`);
+  const ph = await createPo("Pyramid", "PG-106", [{ item: "IPA", qty: 5, rate: 90 }]);
+  check(ph.poNo === "CCPL/PH/060/26-27", `PH series has its own counter (monthly POs did not use PH numbers): ${ph.poNo}`);
+  // Editing keeps the number and the series
+  let mPo = await one("purchaseOrders", "poNo", m1.poNo);
+  await page.goto(`${BASE}/purchase-orders.html?open=${mPo.id}`);
+  await modal().locator("#editPo").click();
+  let em = modal();
+  check((await em.locator("input[readonly]").first().inputValue()).includes(m1.poNo) && await em.locator("select[name=series]").count() === 0, "edit form shows the fixed number; series cannot be changed");
+  await em.locator("input[data-f=qty]").first().fill("120");
+  await em.locator("input[name=date]").fill(iso(nextMonth));
+  await em.locator("#savePo").click();
+  await expectToast();
+  mPo = (await adb.collection("purchaseOrders").doc(mPo.id).get()).data();
+  check(mPo.poNo === m1.poNo && mPo.series === "MONTHLY" && mPo.lines[0].qty === 120, "edited PO (qty and date changed) keeps its number");
+  // Two users create POs at the same moment
+  const context2 = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
+  await routeCdn(context2);
+  const page2 = await context2.newPage();
+  await page2.goto(`${BASE}/index.html?emulator=1`);
+  await page2.fill("input[name=email]", "manager@test.ccpl");
+  await page2.fill("input[name=password]", "Manager#12345");
+  await page2.click("#loginBtn");
+  await page2.waitForURL(/dashboard\.html/, { timeout: 20000 });
+  await page2.goto(`${BASE}/purchase-orders.html`); await page2.waitForSelector('body[data-loaded="1"]');
+  await goto("purchase-orders.html");
+  await page.click("#newPo"); await page2.click("#newPo");
+  const fa = await fillPo(page, { vendor: "Pyramid", warehouse: "PG-106", lines: [{ item: "Apple", qty: 2, rate: 10 }] });
+  const fb = await fillPo(page2, { vendor: "Deepak", warehouse: "PG-106", lines: [{ item: "Apple", qty: 3, rate: 10 }] });
+  await page.waitForFunction(() => document.querySelector("[data-nextno]")?.textContent.includes("CCPL/PH/"), null, { timeout: 10000 }).catch(() => {});
+  await page.screenshot({ path: path.join(OUT, "12-po-series.png") });
+  await Promise.all([fa.locator("#savePo").click(), fb.locator("#savePo").click()]);
+  const [ta, tb] = await Promise.all([page.locator(".toast.ok").first().textContent({ timeout: 20000 }), page2.locator(".toast.ok").first().textContent({ timeout: 20000 })]);
+  const sim = [ta, tb].map((t) => t.replace(" saved.", "")).sort();
+  check(sim[0] === "CCPL/PH/061/26-27" && sim[1] === "CCPL/PH/062/26-27", `two POs saved at the same moment get different numbers: ${sim.join(", ")}`);
+  await context2.close();
+  await page.evaluate(() => document.querySelectorAll(".toast").forEach((x) => x.remove()));
+  await closeAllModals();
+  const allNos = (await adb.collection("purchaseOrders").get()).docs.map((d) => d.data().poNo);
+  check(new Set(allNos).size === allNos.length, `no duplicate PO numbers across ${allNos.length} POs`);
 
   /* ================= 6c. Opening / existing stock ================= */
   console.log("\n6c. Add Existing / Opening Stock");
@@ -380,6 +524,87 @@ try {
   await expectToast();
   const os = await one("adjustments", "kind", "OPENING");
   check(await stockOf("BREEZE", "Carboy") === 50 && os?.adjNo.startsWith("OS/") && os.reason.includes("go-live") && os.createdBy?.name === "Test Admin", "opening stock +50 Carboy at Breeze with its own OS number, reason and user");
+
+  /* ================= 6d. Vehicle rejected + payment hold ================= */
+  console.log("\n6d. Vehicle rejected inward / payment hold");
+  const rjPo = await createPo("Gujarat Acids", "PG-153", [{ item: "Methanol", qty: 20000, rate: 30 }]);
+  const stockBefore = await stockOf("PG-153", "Methanol");
+  const rj1 = await receiptEntry({ poNo: rjPo.poNo, invoiceNo: "GA-INV-1", qtys: { Methanol: 10000 }, transport: "PARTY", rejectReason: "UV absorbance at 250 nm failed" });
+  po = await one("purchaseOrders", "poNo", rjPo.poNo);
+  check(rj1.stage === "REJECTED" && rj1.rejection.reason.includes("UV") && rj1.rejection.by.name === "Test Admin" && rj1.rejection.at && rj1.paymentHold.active === true, "vehicle recorded as Vehicle Rejected with reason, user and time; payment hold on");
+  check(po.status === "OPEN" && lineOf(po, "Methanol").invoicedQty === 0 && (await stockOf("PG-153", "Methanol")) === stockBefore, "rejected inward: zero received on the PO, PO stays OPEN, no stock added");
+  // The same invoice can come back on a new vehicle (old entry stays on hold)
+  const rj2 = await receiptEntry({ poNo: rjPo.poNo, invoiceNo: "GA-INV-1", qtys: { Methanol: 10000 }, transport: "SELF", amount: 12000, confirm: true });
+  await grnStep(rj2);
+  await kantaStep(rj2, { Methanol: 9990 });
+  // A third vehicle is rejected at the Kanta stage (after GRN)
+  const rj3 = await receiptEntry({ poNo: rjPo.poNo, invoiceNo: "GA-INV-2", qtys: { Methanol: 5000 } });
+  await grnStep(rj3);
+  po = await one("purchaseOrders", "poNo", rjPo.poNo);
+  check(po.status === "AWAITING KANTA" && lineOf(po, "Methanol").pendingKantaQty === 5000, "GRN done for the third vehicle → AWAITING KANTA");
+  await goto("inward.html#kanta"); await page.click('[data-tab="KANTA PENDING"]');
+  await page.locator(`[data-kanta="${rj3.id}"]`).click();
+  await modal().locator("#rejRec").click();
+  await page.locator("#confirmInput").fill("Moisture above limit — sent back");
+  await page.click("#confirmOk");
+  await expectToast("info");
+  po = await one("purchaseOrders", "poNo", rjPo.poNo);
+  const methLine = lineOf(po, "Methanol");
+  check(po.status === "PARTIALLY INWARDED" && methLine.pendingKantaQty === 0 && methLine.grnQty === 10000 && methLine.receivedQty === 9990 && round(methLine.qty - methLine.receivedQty) === 10010, "rejected at Kanta: GRN reversed, only the accepted 9,990 counts, 10,010 KG still pending");
+  check((await stockOf("PG-153", "Methanol")) === stockBefore + 9990, "stock: only the accepted vehicle (9,990 KG) added");
+  const held = await adb.collection("receipts").doc(rj3.id).get().then((d) => d.data());
+  const accepted = await adb.collection("receipts").doc(rj2.id).get().then((d) => d.data());
+  check(held.stage === "REJECTED" && held.paymentHold.active && accepted.stage === "COMPLETED" && !accepted.paymentHold, "hold applies only to the rejected receipts, not to the accepted receipt on the same PO");
+  // Reject after Kanta (stock reversed) — manager/admin only
+  const rj4 = await receiptEntry({ poNo: rjPo.poNo, invoiceNo: "GA-INV-3", qtys: { Methanol: 2000 } });
+  await grnStep(rj4); await kantaStep(rj4);
+  check((await stockOf("PG-153", "Methanol")) === stockBefore + 11990, "fourth vehicle inwarded (+2,000)");
+  await goto("inward.html"); await page.click('[data-tab="COMPLETED"]');
+  await page.locator(`[data-view="${rj4.id}"]`).first().click();
+  await modal().locator("#rejRec").click();
+  await page.locator("#confirmInput").fill("Lab test failed after unloading — returned");
+  await page.click("#confirmOk");
+  await expectToast("info");
+  po = await one("purchaseOrders", "poNo", rjPo.poNo);
+  check((await stockOf("PG-153", "Methanol")) === stockBefore + 9990 && lineOf(po, "Methanol").receivedQty === 9990, "rejected after Kanta: 2,000 KG taken back out of stock and off the PO");
+  // Inward history & accounts view
+  await goto("inward.html"); await page.click('[data-tab="HOLD"]');
+  const holdText = await page.textContent("#rows");
+  check(holdText.includes("Payment Hold — Rejected Inward") && holdText.includes("GA-INV-1") && holdText.includes("GA-INV-2") && holdText.includes("VEHICLE REJECTED"), "Payment hold tab shows the rejected receipts with Payment Hold — Rejected Inward");
+  await page.click('[data-tab="ALL"]');
+  const allText = await page.textContent("#rows");
+  check(allText.includes("Self / CCPL Transport") && allText.includes("₹12,000.00") && allText.includes("Party Transport") && allText.includes("Payable as per Kanta"), "inward history shows transport arrangement, amount and accounts status");
+  await page.screenshot({ path: path.join(OUT, "11-inward-rejected-hold.png"), fullPage: true });
+  await page.goto(`${BASE}/purchase-orders.html?open=${po.id}`);
+  await modal().locator("#pdfPo").waitFor();
+  const rjDetail = await modal().textContent();
+  check(rjDetail.includes("Payment Hold — Rejected Inward") && rjDetail.includes("GA-INV-1") && rjDetail.includes("₹12,000.00"), "PO detail shows the rejected receipts on hold and transport cost");
+  await closeAllModals();
+  // Edit transport later (bill arrives afterwards)
+  await goto("inward.html"); await page.click('[data-tab="COMPLETED"]');
+  await page.locator(`[data-view="${rj2.id}"]`).first().click();
+  await modal().locator("#trRec").click();
+  await modal().locator("input[name=transportAmount]").fill("12500");
+  await modal().locator("input[name=transporter]").fill("Shree Roadlines");
+  await modal().locator("#saveT").click();
+  await expectToast();
+  const rj2b = await adb.collection("receipts").doc(rj2.id).get().then((d) => d.data());
+  check(rj2b.transportAmount === 12500 && rj2b.transporter === "Shree Roadlines" && rj2b.transportUpdatedBy?.name === "Test Admin", "transport amount corrected later; who changed it is recorded");
+  // Resolve hold (manager)
+  await logout();
+  await login("manager@test.ccpl", "Manager#12345");
+  await page.waitForURL(/dashboard\.html/);
+  await goto("inward.html"); await page.click('[data-tab="HOLD"]');
+  await page.locator(`[data-view="${rj1.id}"]`).first().click();
+  await modal().locator("#resolveHold").click();
+  await page.locator("#confirmInput").fill("Vehicle returned; vendor will not bill this invoice");
+  await page.click("#confirmOk");
+  await expectToast();
+  const rj1b = await adb.collection("receipts").doc(rj1.id).get().then((d) => d.data());
+  check(rj1b.stage === "REJECTED" && rj1b.paymentHold.active === false && rj1b.paymentHold.resolvedBy.name === "Test Manager" && rj1b.paymentHold.resolution.includes("returned"), "manager resolves the payment hold with a note; receipt stays rejected with zero quantity");
+  await logout();
+  await login("admin@test.ccpl", "Admin#12345");
+  await page.waitForURL(/dashboard\.html/);
 
   /* ================= 7. Transfer PG-106 → Taloja with transit loss ================= */
   console.log("\n7. Stock transfer PG → Taloja");
@@ -556,6 +781,87 @@ try {
   pi = await one("proformaInvoices", "soId", gaSo.id);
   check(pi.status === "PAID" && pi.statusNote.includes("UTR"), "PI marked paid with payment reference");
 
+  /* ================= 10c. SO ⇄ PI document type, all parties ================= */
+  console.log("\n10c. Sales Order / Proforma Invoice document type; suppliers usable for sales");
+  await goto("sales-orders.html"); await page.click("#newDoc");
+  m = modal();
+  const soParties = await m.locator("select[name=customerId]").textContent();
+  check(soParties.includes("Bulk Supplier Two") && soParties.includes("Pyramid Technoplast Limited") && soParties.includes("Deepak Fertilisers Ltd"), "SO party list includes suppliers as well as customers");
+  check((await m.locator("select[name=docType]").textContent()).includes("Proforma Invoice (PI)"), "SO form has a Document Type dropdown (SO / PI)");
+  await selectContaining(m.locator("select[name=customerId]"), "Pyramid Technoplast");
+  await m.locator("input[name=customerPoNo]").fill("PTL/PO/991");
+  await m.locator("select[name=warehouse]").selectOption("PG-106");
+  await selectContaining(m.locator("select[data-f=itemId]").first(), "IPA");
+  await m.locator("input[data-f=qty]").first().fill("40");
+  await m.locator("input[data-f=rate]").first().fill("110");
+  await page.screenshot({ path: path.join(OUT, "14-so-doc-type.png") });
+  await m.locator("select[name=docType]").selectOption("PI");
+  await page.waitForURL(/proforma\.html/);
+  m = modal();
+  await m.locator("#savePi").waitFor();
+  check(await m.locator("select[name=customerId] option:checked").textContent().then((t) => t.includes("Pyramid")) && await m.locator("input[name=refNo]").inputValue() === "PTL/PO/991"
+    && await m.locator("input[data-f=qty]").first().inputValue() === "40" && (await m.locator("input[name=dispatchFrom]").inputValue()).includes("PATALGANGA"), "switching to PI keeps party, reference, items and dispatch-from");
+  await m.locator("#savePi").click();
+  await expectToast();
+  const supplierPi = await one("proformaInvoices", "refNo", "PTL/PO/991");
+  check(supplierPi?.customer.name === "Pyramid Technoplast Limited" && near(supplierPi.totals.total, 5192), `PI ${supplierPi?.piNo} raised to a party that is also our supplier (₹5,192)`);
+  await goto("proforma.html"); await page.click("#newDoc");
+  m = modal();
+  await selectContaining(m.locator("select[name=customerId]"), "Bulk Supplier Two");
+  await m.locator("input[name=refNo]").fill("BS2/77");
+  await selectContaining(m.locator("select[data-f=itemId]").first(), "Apple");
+  await m.locator("input[data-f=qty]").first().fill("3");
+  await m.locator("input[data-f=rate]").first().fill("100");
+  await m.locator("select[name=docType]").selectOption("SO");
+  await page.waitForURL(/sales-orders\.html/);
+  m = modal();
+  await m.locator("#saveS").waitFor();
+  check(await m.locator("input[name=customerPoNo]").inputValue() === "BS2/77" && await m.locator("input[data-f=qty]").first().inputValue() === "3", "switching PI → SO keeps party, reference and items");
+  await m.locator("#saveS").click();
+  await expectToast();
+  check((await one("salesOrders", "customerPoNo", "BS2/77"))?.customer.name === "Bulk Supplier Two", "SO saved for a supplier-type party (no duplicate party needed)");
+
+  /* ================= 10d. Warehouses: create, rename, details ================= */
+  console.log("\n10d. Warehouses");
+  const talojaStock = await stockOf("TALOJA", "Hydrochloric Acid 33%");
+  await logout();
+  await login("manager@test.ccpl", "Manager#12345");
+  await page.waitForURL(/dashboard\.html/);
+  await goto("warehouses.html");
+  await page.click("#addWh");
+  m = modal();
+  await m.locator("input[name=name]").fill("Kharghar Godown");
+  await m.locator("input[name=code]").fill("KHG");
+  await m.locator("textarea[name=addressLines]").fill("Plot 12, Sector 7\nKharghar, Navi Mumbai 410210");
+  await m.locator("input[name=contactPerson]").fill("Mr. Patil");
+  await m.locator("input[name=phone]").fill("98200 11111");
+  await m.locator("input[name=note]").fill("Gate closes at 8 pm");
+  await m.locator("#saveWh").click();
+  await expectToast();
+  await page.locator('[data-edit="TALOJA"]').click();
+  m = modal();
+  await m.locator("input[name=name]").fill("Taloja Warehouse");
+  await m.locator("input[name=contactPerson]").fill("Mr. Shinde");
+  await m.locator("#saveWh").click();
+  await expectToast();
+  const tal = (await adb.collection("warehouses").doc("TALOJA").get()).data();
+  check((await adb.collection("warehouses").doc("KHG").get()).data()?.contactPerson === "Mr. Patil" && tal.name === "Taloja Warehouse", "manager created Kharghar Godown and renamed Taloja Unit → Taloja Warehouse");
+  check((await stockOf("TALOJA", "Hydrochloric Acid 33%")) === talojaStock && talojaStock > 0, "renamed warehouse keeps its stock");
+  await page.locator('[data-view="KHG"]').click();
+  const whView = await modal().textContent();
+  check(whView.includes("Kharghar, Navi Mumbai") && whView.includes("Mr. Patil") && whView.includes("98200 11111") && whView.includes("Gate closes at 8 pm"), "View details shows address, contact person, phone and note");
+  await page.screenshot({ path: path.join(OUT, "13-warehouse-details.png") });
+  await closeAllModals();
+  await goto("inventory.html");
+  check((await page.textContent("#page")).includes("Taloja Warehouse"), "stock page shows the new name");
+  await goto("transfers.html"); await page.click('[data-tab="ALL"]').catch(() => {});
+  check((await page.textContent("#page")).includes("Taloja Warehouse"), "earlier transfer history shows the renamed warehouse");
+  const renameLog = await one("activity", "action", "RENAME");
+  check(renameLog?.summary.includes("Taloja Unit → Taloja Warehouse"), "rename recorded in the activity log");
+  await logout();
+  await login("admin@test.ccpl", "Admin#12345");
+  await page.waitForURL(/dashboard\.html/);
+
   /* ================= 11. Ledger & activity log ================= */
   console.log("\n11. Stock ledger & activity log");
   const ledger = (await adb.collection("stockLedger").get()).docs.map((d) => d.data());
@@ -599,6 +905,7 @@ try {
   const exText = await page.textContent("#page");
   check(exText.includes("Kanta shortage / excess") && exText.includes("Apple: GRN 5 → Kanta 4.8") && exText.includes("Methanol: GRN 10,000 → Kanta 9,970"), "Exceptions lists Kanta shortages (Apple −0.2, Methanol −30)");
   check(exText.includes("Invoice qty not matching Kanta") && exText.includes("Stock manually adjusted") && exText.includes("Opening / existing stock"), "Exceptions lists invoice≠payable and manual stock entries");
+  check(exText.includes("Payment Hold — Rejected Inward") && exText.includes("GA-INV-2") && !exText.includes("Vehicle returned; vendor will not bill"), "Exceptions lists receipts on payment hold (resolved holds drop off)");
   await page.screenshot({ path: path.join(OUT, "08-exceptions.png"), fullPage: true });
   check(await page.locator('.nav-link[href="access.html"]').count() === 0, "Access Audit is hidden from other admins");
   const deniedSessions = await page.evaluate(async () => {
@@ -631,6 +938,8 @@ try {
   await page.waitForURL(/dashboard\.html/);
   await goto("purchase-orders.html");
   check(await page.locator("#newPo").count() === 0, "operator cannot see New Purchase Order");
+  await goto("warehouses.html");
+  check(await page.locator("#addWh").count() === 0 && await page.locator("[data-edit]").count() === 0 && await page.locator("[data-view]").count() > 0, "operator can view warehouse details but cannot create or rename");
   const denied = await page.evaluate(async () => {
     const { db } = await import("./js/firebase-config.js");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -644,6 +953,10 @@ try {
     await tryIt("negativeStock", () => fs.setDoc(fs.doc(db, "inventory", "TALOJA__x"), { qty: -5 }));
     await tryIt("makeMeAdmin", async () => { const { auth } = await import("./js/firebase-config.js"); await fs.updateDoc(fs.doc(db, "users", auth.currentUser.uid), { role: "admin" }); });
     await tryIt("readOldCollection", () => fs.getDocs(fs.collection(db, "inward")));
+    await tryIt("createWarehouse", () => fs.setDoc(fs.doc(db, "warehouses", "HACK"), { name: "Hack" }));
+    const held = await fs.getDocs(fs.query(fs.collection(db, "receipts"), fs.where("invoiceNo", "==", "GA-INV-2")));
+    await tryIt("liftPaymentHold", () => fs.updateDoc(held.docs[0].ref, { "paymentHold.active": false }));
+    await tryIt("unrejectReceipt", () => fs.updateDoc(held.docs[0].ref, { stage: "GRN PENDING" }));
     return results;
   });
   check(Object.values(denied).every((v) => v === "permission-denied"), `operator write attempts denied by rules: ${JSON.stringify(denied)}`);
