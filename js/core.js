@@ -57,8 +57,31 @@ export const DEFAULT_WAREHOUSES = [
   { code: "TALOJA", name: "Taloja Unit", docCode: "TL", addressLines: [], destination: "TALOJA", active: true }
 ];
 
-export const ITEM_CATEGORIES = ["Raw Material", "Finished Goods", "Packaging", "Trading", "Consumable"];
-export const UNITS = ["KG", "MT", "LTR", "KL", "NOS", "DRUM", "CARBOY", "BAG", "BOX", "SET"];
+export const ITEM_CATEGORIES = ["Raw Material", "Finished Goods", "Packaging", "Trading", "Consumable", "Service"];
+/** Items that are never stocked (used on Service POs, e.g. transportation). */
+export const isServiceItem = (item) => item?.category === "Service";
+export const UNITS = ["KG", "MT", "LTR", "KL", "NOS", "DRUM", "CARBOY", "BAG", "BOX", "SET", "JOB", "TRIP", "MONTH"];
+
+/** Payment terms are free text ("30 Days", "Advance", "Against delivery", …); a number of days is read from it when present. */
+export const PAYMENT_TERM_SUGGESTIONS = ["Advance", "Against delivery", "Immediate", "7 Days", "15 Days", "30 Days", "45 Days", "60 Days", "90 Days", "50% Advance, balance against delivery"];
+export function termsDays(text) {
+  const t = String(text ?? "").trim().toLowerCase();
+  if (!t) return null;
+  const days = t.match(/(\d+)\s*days?\b/) || t.match(/^net\s*(\d+)$/) || t.match(/^(\d+)$/);
+  if (days) return Number(days[1]);
+  if (/advance|immediate|due on receipt|cash|against/.test(t)) return 0;
+  return null;
+}
+/** A number of days becomes "30 Days"; any text is kept as typed. */
+export function normalizeTerms(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? `${value} Days` : "";
+  const t = String(value).trim();
+  return /^\d+$/.test(t) ? `${Number(t)} Days` : t;
+}
+/** Payment terms of a party (older records only had a number of days). */
+export const partyTerms = (p) => normalizeTerms(p?.paymentTerms || (p?.paymentTermsDays !== null && p?.paymentTermsDays !== undefined && p?.paymentTermsDays !== "" ? p.paymentTermsDays : ""));
+export const termsDatalist = (id = "termsList") => `<datalist id="${id}">${PAYMENT_TERM_SUGGESTIONS.map((t) => `<option value="${t}"></option>`).join("")}</datalist>`;
 
 export const NUMBER_FORMATS = {
   POPH: "CCPL/PH/{SEQ}/{FY}",
@@ -293,7 +316,7 @@ export function badge(status) {
     SENT: "blue", ACCEPTED: "green", REJECTED: "red", CONVERTED: "indigo", EXPIRED: "gray",
     "PARTIALLY DISPATCHED": "amber", "KANTA PENDING": "amber", "GRN PENDING": "blue", "IN TRANSIT": "amber", RECEIVED: "green",
     POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray",
-    ISSUED: "blue", PAID: "green", OVERDUE: "red", INWARDED: "green", "VEHICLE REJECTED": "red", "PAYMENT HOLD — REJECTED INWARD": "red", "HOLD RESOLVED": "gray",
+    ISSUED: "blue", PAID: "green", OVERDUE: "red", INWARDED: "green", "INWARDED · PART REJECTED": "amber", "CLOSED WITH BALANCE": "gold", "SERVICE COMPLETED": "green", GOODS: "blue", SERVICE: "indigo", "VEHICLE REJECTED": "red", "PAYMENT HOLD — REJECTED INWARD": "red", "HOLD RESOLVED": "gray",
     CUSTOMER: "blue", SUPPLIER: "indigo", BOTH: "gold"
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;
@@ -691,7 +714,7 @@ export function pageHeader(eyebrow, title, subtitle = "", actions = "") {
  * A line is complete when done >= ordered × (1 − tolerance%).
  */
 export function deriveOrderStatus(order, doneKey, tolerancePct = 0) {
-  if (["CANCELLED", "SHORT CLOSED", "CLOSED", "DRAFT"].includes(order.status)) return order.status;
+  if (["CANCELLED", "SHORT CLOSED", "CLOSED", "CLOSED WITH BALANCE", "SERVICE COMPLETED", "DRAFT"].includes(order.status)) return order.status;
   const lines = order.lines || [];
   const factor = 1 - (Number(tolerancePct) || 0) / 100;
   const n = (v) => Number(v) || 0;
@@ -707,28 +730,67 @@ export function deriveOrderStatus(order, doneKey, tolerancePct = 0) {
 }
 
 export const OPEN_PO_STATUSES = ["OPEN", "PARTIALLY RECEIVED", "AWAITING KANTA", "PARTIALLY INWARDED"];
+/** Closed before everything arrived: the unreceived balance is kept as history, not as pending. */
+export const CLOSED_PO_STATUSES = ["CLOSED WITH BALANCE", "CLOSED", "SHORT CLOSED"];
+export const isServicePo = (po) => po?.poType === "SERVICE";
 
-/** Older single-item receipts are shown in the new multi-item shape. */
-export function normalizeReceipt(r) {
-  if (Array.isArray(r.lines)) return r;
-  const line = { poLineId: r.poLineId || "", itemId: r.item?.id, name: r.item?.name, unit: r.item?.unit, category: r.item?.category || "", hsn: r.item?.hsn || "", rate: 0, invoiceQty: Number(r.invoiceQty) || 0 };
-  if (r.kanta) line.kantaQty = Number(r.kanta.receivedQty) || 0;
-  if (r.grn) line.grnQty = Number(r.grn.acceptedQty) || 0;
-  return { ...r, lines: [line] };
+/**
+ * Every quantity of a PO line, null-safe (missing values count as 0).
+ *   kanta    = weighed on the Kanta (accepted + rejected) = GRN − awaiting Kanta + short/excess
+ *   shortExcess = Kanta − GRN (negative = short, positive = excess, 0 = no difference)
+ *   accepted = received into stock (counts toward the PO); rejected = sent back
+ *   pending  = ordered − accepted (0 once the PO is closed; the closed balance stays in history)
+ */
+export function poLineQty(l, status = "") {
+  const v = (x) => { const k = Number(x); return Number.isFinite(k) ? k : 0; };
+  const ordered = v(l.qty); const invoiced = v(l.invoicedQty); const grn = v(l.grnQty); const awaitingKanta = v(l.pendingKantaQty);
+  const shortExcess = round(v(l.varianceQty)); const accepted = v(l.receivedQty); const rejected = v(l.rejectedQty);
+  const kanta = round(grn - awaitingKanta + shortExcess);
+  const closedBalance = CLOSED_PO_STATUSES.includes(status) ? (l.closedBalanceQty !== undefined ? v(l.closedBalanceQty) : Math.max(0, round(ordered - accepted))) : 0;
+  const pending = CLOSED_PO_STATUSES.includes(status) || status === "CANCELLED" ? 0 : Math.max(0, round(ordered - accepted));
+  return { ordered, invoiced, grn, kanta, shortExcess, accepted, rejected, awaitingKanta, closedBalance, pending };
 }
+/** Signed difference for display: "0", "+5", "-3". Never "null" / "NaN". */
+export function fmtDiff(value) {
+  const d = round(Number(value) || 0);
+  return d === 0 ? "0" : `${d > 0 ? "+" : ""}${qty(d)}`;
+}
+export const diffColor = (value) => ((Number(value) || 0) < 0 ? "var(--danger)" : (Number(value) || 0) > 0 ? "var(--success)" : "inherit");
+
+/** Older receipts are shown in the current shape: multi-item lines, each line linked to its own PO. */
+export function normalizeReceipt(r) {
+  let out = r;
+  if (!Array.isArray(r.lines)) {
+    const line = { poLineId: r.poLineId || "", itemId: r.item?.id, name: r.item?.name, unit: r.item?.unit, category: r.item?.category || "", hsn: r.item?.hsn || "", rate: 0, invoiceQty: Number(r.invoiceQty) || 0 };
+    if (r.kanta) line.kantaQty = Number(r.kanta.receivedQty) || 0;
+    if (r.grn) line.grnQty = Number(r.grn.acceptedQty) || 0;
+    out = { ...r, lines: [line] };
+  }
+  const lines = out.lines.map((l) => ({ ...l, poId: l.poId || (l.poLineId ? out.poId || "" : ""), poNo: l.poNo || (l.poLineId ? out.poNo || "" : "") }));
+  const poIds = out.poIds || [...new Set(lines.map((l) => l.poId).filter(Boolean))];
+  return { ...out, lines, poIds };
+}
+/** Accepted (stock) quantity of a receipt line after Kanta. */
+export const acceptedOf = (l) => (l.acceptedQty !== undefined ? Number(l.acceptedQty) || 0 : Number(l.kantaQty) || 0);
 
 /* ------------------------------------------------------------------ */
 /* Receipt status for accounts (Tally remains the accounting system)   */
 /* ------------------------------------------------------------------ */
 export const HOLD_TEXT = "Payment Hold — Rejected Inward";
 const HOLD_HELP = "Operational instruction for accounts: do not pay this receipt. It does not block payment in Tally.";
-export const isOnHold = (r) => r.stage === "REJECTED" && r.paymentHold?.active !== false;
+export const isOnHold = (r) => (r.paymentHold ? r.paymentHold.active === true : r.stage === "REJECTED");
+export const isPartlyRejected = (r) => r.stage === "COMPLETED" && (r.lines || []).some((l) => (Number(l.rejectedQty) || 0) > 0);
 /** What accounts should do with a receipt: { label, tone, help }. */
 export function accountsStatus(r) {
   if (r.stage === "REJECTED") {
     return isOnHold(r)
       ? { label: HOLD_TEXT, tone: "red", help: HOLD_HELP }
       : { label: "Hold resolved", tone: "gray", help: `Resolved by ${r.paymentHold?.resolvedBy?.name || ""}: ${r.paymentHold?.resolution || ""}` };
+  }
+  if (isPartlyRejected(r)) {
+    return isOnHold(r)
+      ? { label: `Pay accepted qty only · ${HOLD_TEXT} on rejected qty`, tone: "red", help: "Pay only the accepted quantity. The rejected quantity is on payment hold (does not block Tally)." }
+      : { label: "Pay accepted qty only · hold resolved", tone: "amber", help: `Rejected portion resolved by ${r.paymentHold?.resolvedBy?.name || ""}: ${r.paymentHold?.resolution || ""}` };
   }
   if (r.stage === "COMPLETED") return { label: "Payable as per Kanta", tone: "green", help: "Enter in Tally using the Kanta (payable) quantity." };
   if (r.stage === "CANCELLED") return { label: "Cancelled — nothing payable", tone: "gray", help: "" };
@@ -739,5 +801,5 @@ export function accountsBadge(r) {
   return `<span class="badge ${s.tone}" title="${esc(s.help)}">${esc(s.label)}</span>`;
 }
 /** Stage label shown to users. */
-export const receiptStageLabel = (r) => (r.stage === "COMPLETED" ? "INWARDED" : r.stage === "REJECTED" ? "VEHICLE REJECTED" : r.stage);
+export const receiptStageLabel = (r) => (r.stage === "COMPLETED" ? (isPartlyRejected(r) ? "INWARDED · PART REJECTED" : "INWARDED") : r.stage === "REJECTED" ? "VEHICLE REJECTED" : r.stage);
 export const transportText = (r) => (r.transportMode ? `${TRANSPORT_MODES[r.transportMode] || r.transportMode}${Number.isFinite(r.transportAmount) && r.transportAmount !== null ? ` · ₹${money(r.transportAmount)}` : ""}` : "—");

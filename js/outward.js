@@ -57,7 +57,7 @@ async function start() {
 
   const available = (wh, itemId) => Number(stock.find((s) => s.id === stockId(wh, itemId))?.qty || 0);
   const packagingItems = () => items.filter((i) => i.category === "Packaging" && i.active !== false);
-  const productItems = () => items.filter((i) => i.category !== "Packaging" && i.active !== false);
+  const productItems = () => items.filter((i) => i.category !== "Packaging" && i.category !== "Service" && i.active !== false);
 
   page.addEventListener("click", (event) => {
     const dc = event.target.closest("[data-dc]");

@@ -1,6 +1,6 @@
 import {
   db, initPage, pageHeader, esc, listCollection, money, qty, fmtDate, fmtDateTime, isoDate, round, warehouseByCode, activeWarehouses, state,
-  OPEN_PO_STATUSES
+  OPEN_PO_STATUSES, isServicePo
 } from "./core.js";
 import { computeExceptions } from "./exceptions-data.js";
 import { collection, getDocs, limit, orderBy, query } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -22,9 +22,10 @@ async function start() {
   const kantaPending = receipts.filter((r) => r.stage === "KANTA PENDING");
   const openSos = sos.filter((s) => ["OPEN", "PARTIALLY DISPATCHED"].includes(s.status));
   const inTransit = transfers.filter((t) => t.status === "IN TRANSIT");
-  const pendingPoValue = openPos.reduce((sum, p) => sum + p.lines.reduce((s, l) => s + Math.max(0, l.qty - (l.receivedQty || 0)) * l.rate, 0), 0);
+  const openGoods = openPos.filter((p) => !isServicePo(p));
+  const pendingPoValue = openGoods.reduce((sum, p) => sum + p.lines.reduce((s, l) => s + Math.max(0, l.qty - (l.receivedQty || 0)) * l.rate, 0), 0);
   const today = isoDate();
-  const pendingLines = openPos.flatMap((p) => p.lines.filter((l) => l.qty - (l.receivedQty || 0) > 0.0005).map((l) => ({ p, l, overdue: p.expectedDate && p.expectedDate < today })))
+  const pendingLines = openGoods.flatMap((p) => p.lines.filter((l) => l.qty - (l.receivedQty || 0) > 0.0005).map((l) => ({ p, l, overdue: p.expectedDate && p.expectedDate < today })))
     .sort((a, b) => (a.p.expectedDate || "9").localeCompare(b.p.expectedDate || "9")).slice(0, 10);
   const exceptions = computeExceptions({ pos, receipts, adjustments, company: state.company });
   const exceptionTotal = exceptions.reduce((s, g) => s + g.rows.length, 0);

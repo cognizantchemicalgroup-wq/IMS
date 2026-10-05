@@ -67,6 +67,33 @@ Every new PO picks a **PO Series**:
 
 Each series has its own counter; set the starting number in **Settings → Document numbering**. Editing a PO never changes its number.
 
+### One supplier bill against several POs
+In **New Invoice / Receipt** choose the supplier: every open goods PO of that party is listed line by line. Type the quantity
+for each PO line, or type the **total on the bill** for an item and it is allocated to the oldest PO first (e.g. 190 kg →
+100 kg on PO 1 + 90 kg on PO 2). Each receipt line is linked to its own PO line, so GRN, Kanta, stock and every PO's
+received / rejected / pending quantities stay exact. Only the accepted Kanta quantity (190 kg) goes into stock.
+
+### Close PO with Balance (passive close)
+A manager/admin can **Close PO with Balance** when the rest will not be supplied (e.g. 90 of 100 kg received). The PO shows
+**Closed with Balance** (different from Completed); each item keeps ordered, received, rejected and **closed balance** (10 kg)
+separately; the balance is kept in history but is no longer pending; reason, user and time are recorded; no more inward is
+accepted. **Reopen** makes the balance pending again (stock is not changed). Every close / reopen is kept in the PO history.
+
+### Service PO
+Choose **PO Type → Service PO** for transportation and other services (service items have category *Service*, e.g. the seeded
+"Transportation Charges" and "Other Services"). A Service PO needs no inward, GRN or Kanta and never touches stock. When the
+supplier bill / service confirmation arrives, a manager/admin clicks **Mark service completed & close** (bill no., date, amount, note).
+
+### Payment terms
+Payment terms are text: "30 Days", "Advance", "Against delivery", "50% advance, balance against delivery" or anything else.
+A number typed alone becomes "30 Days". When the terms contain a number of days, the proforma invoice due date is calculated from it.
+
+### Short / excess, rejection
+Short/Excess = Kanta − GRN and always shows a number (**0** when there is no difference). At Kanta, a **partial rejection** records
+the rejected quantity per item with a reason: only the accepted quantity goes into stock and counts toward the PO; the rejected
+quantity is kept separately and shows "Payment Hold — Rejected Inward" against the rejected portion. A **full rejection**
+(Vehicle Rejected) is described below.
+
 ### Transport (inward)
 Each inward entry records **Transport Arrangement** (Self / CCPL Transport or Party Transport) and the **Transportation Amount**,
 with who created it and when. The amount can be corrected later ("Edit transport", logged). It is internal: shown on the inward
@@ -138,10 +165,12 @@ npm install
 npx playwright install chromium
 npm test
 ```
-It runs 119 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
+It runs 149 checks: login security, vendor Excel import (own template and Zoho Books export, duplicate GSTINs merged), PO numbering and GST, the 10-apples partial/short scenario,
 short close, auto-complete, 0.5 % tanker tolerance, IGST, PH and Monthly PO series (month change, edit keeps number, two users saving
 at once), transport amount kept off the PO PDF, vehicle rejected at entry / Kanta / after Kanta with payment hold and its resolution,
 party import (template, row/column errors, skip/update, report, CSV, Zoho), warehouse create/rename/details,
+one bill split across two POs (190 kg = 100 + 90) with Close with Balance and reopen, partial rejection at Kanta, Service PO,
+text payment terms,
 transfer PG-106 → Taloja with transit loss, write-off + delete, quotation → SO → dispatch with drum deduction,
 SO ⇄ PI document type with a supplier as customer, proforma invoice from a sales order (IGST, due date, PDF, mark paid), stock ledger, activity log, and that operators/outsiders are blocked by the rules.
 PDFs and screenshots are written to `tests/output/`.
