@@ -6,6 +6,7 @@ import {
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
   reserveNumber, commitNumber, exportExcel, STATE_CODES
 } from "./core.js";
+import { termsDays, normalizeTerms, partyTerms, termsDatalist, isServiceItem } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js";
 import { piSpec, showDocument, safeFileName } from "./pdf.js";
@@ -77,7 +78,7 @@ async function start() {
     const d = existing || fromDraft || (so ? {
       customer: so.customer, refNo: so.customerPoNo || "", refDate: so.customerPoDate || "", placeOfSupply: so.placeOfSupply || "",
       dispatchFrom: dispatchFromOf(so.warehouse), shipTo: so.shipTo, notes: so.notes || "",
-      termsDays: Number.parseInt(so.paymentTerms, 10) || "",
+      paymentTerms: so.paymentTerms || "",
       lines: so.lines.map((l) => ({ ...l, qty: Math.max(0, round(l.qty - (l.dispatchedQty || 0))) })).filter((l) => l.qty > 0)
     } : {});
     const openSos = orders.filter((o) => ["OPEN", "PARTIALLY DISPATCHED"].includes(o.status));
@@ -90,7 +91,7 @@ async function start() {
         <div class="form-grid">
         <label class="field span-2"><span>Customer / Party (Bill To) <b class="req">*</b></span><select name="customerId"><option value="">Select party…</option>${customers.filter((c) => c.active !== false || c.id === d.customer?.id).sort((a, b) => a.name.localeCompare(b.name)).map((c) => partyOption(c, d.customer?.id)).join("")}</select></label>
         <label class="field"><span>Invoice Date <b class="req">*</b></span><input type="date" name="date" value="${esc(d.date || isoDate())}" /></label>
-        <label class="field"><span>Terms (days)</span><input type="number" min="0" step="1" name="termsDays" value="${esc(d.termsDays ?? "")}" /></label>
+        <label class="field"><span>Payment Terms</span><input name="paymentTerms" list="piTerms" value="${esc(d.paymentTerms || (d.termsDays !== undefined && d.termsDays !== "" ? normalizeTerms(d.termsDays) : ""))}" placeholder="e.g. 45 Days, Advance, Against delivery" />${termsDatalist("piTerms")}<small class="help">Due date is set from the days in the terms (Advance = invoice date).</small></label>
         <label class="field"><span>Due Date</span><input type="date" name="dueDate" value="${esc(d.dueDate || "")}" /></label>
         <label class="field"><span>Reference No. (customer PO)</span><input name="refNo" value="${esc(d.refNo || "")}" /></label>
         <label class="field"><span>Reference Date</span><input type="date" name="refDate" value="${esc(d.refDate || "")}" /></label>
@@ -111,18 +112,18 @@ async function start() {
     const form = modal.el.querySelector("#piForm");
     const customerOf = () => customers.find((c) => c.id === form.customerId.value);
     const intra = () => { const c = customerOf(); return !c || !c.stateCode || String(c.stateCode) === String(state.company.stateCode); };
-    const editor = createLineEditor(modal.el.querySelector("#lines"), { items, lines: d.lines || [], isIntraState: intra, itemFilter: (i) => i.category !== "Packaging" });
-    const syncDue = () => { if (form.termsDays.value !== "") form.dueDate.value = addDays(form.date.value || isoDate(), Number(form.termsDays.value)); };
+    const editor = createLineEditor(modal.el.querySelector("#lines"), { items, lines: d.lines || [], isIntraState: intra, itemFilter: (i) => i.category !== "Packaging" && !isServiceItem(i) });
+    const syncDue = () => { const days = termsDays(form.paymentTerms.value); if (days !== null) form.dueDate.value = addDays(form.date.value || isoDate(), days); };
     const syncCustomer = () => {
       const c = customerOf();
       if (c && !form.placeOfSupply.value) form.placeOfSupply.value = c.stateCode ? `${STATE_CODES[c.stateCode] || c.state || ""} (${c.stateCode})` : c.state || "";
       if (c && !form.destination.value) form.destination.value = (c.city || "").toUpperCase();
-      if (c?.paymentTermsDays && form.termsDays.value === "") { form.termsDays.value = c.paymentTermsDays; syncDue(); }
+      if (c && partyTerms(c) && form.paymentTerms.value === "") { form.paymentTerms.value = partyTerms(c); syncDue(); }
       form.taxType.value = intra() ? "CGST + SGST (intra-state)" : "IGST (inter-state)";
       editor.refresh();
     };
     form.customerId.addEventListener("change", () => { form.placeOfSupply.value = ""; form.destination.value = ""; syncCustomer(); });
-    form.termsDays.addEventListener("input", syncDue);
+    form.paymentTerms.addEventListener("input", syncDue);
     form.date.addEventListener("change", syncDue);
     form.fromSo?.addEventListener("change", () => {
       const o = orders.find((x) => x.id === form.fromSo.value);
@@ -140,7 +141,7 @@ async function start() {
       modal.close();
       openOtherType("SO", {
         customerId: v.customerId, date: v.date, refNo: v.refNo, refDate: v.refDate, placeOfSupply: v.placeOfSupply, warehouse: wh?.code || "",
-        shipToLines: v.shipTo ? v.shipTo.split("\n").map((x) => x.trim()).filter(Boolean) : [], notes: v.notes, termsDays: v.termsDays, lines: editor.draft()
+        shipToLines: v.shipTo ? v.shipTo.split("\n").map((x) => x.trim()).filter(Boolean) : [], notes: v.notes, paymentTerms: v.paymentTerms, lines: editor.draft()
       });
     });
 
@@ -156,7 +157,7 @@ async function start() {
       } catch (error) { toast(error.message, "error"); return; }
       const totals = computeTotals(lines, intra());
       const data = {
-        date: v.date, termsDays: v.termsDays === "" ? "" : Number(v.termsDays), dueDate: v.dueDate || "",
+        date: v.date, paymentTerms: normalizeTerms(v.paymentTerms), termsDays: termsDays(v.paymentTerms) ?? "", dueDate: v.dueDate || "",
         refNo: v.refNo, refDate: v.refDate, placeOfSupply: v.placeOfSupply, dispatchThrough: v.dispatchThrough, dispatchDocNo: v.dispatchDocNo,
         destination: v.destination, dispatchFrom: v.dispatchFrom, customerId: c.id,
         customer: { id: c.id, name: c.name, gstin: c.gstin || "", pan: c.pan || "", stateCode: c.stateCode || "", address1: c.address1 || "", address2: c.address2 || "", city: c.city || "", pincode: c.pincode || "", state: c.state || "", country: c.country || "India", phone: c.phone || "", email: c.email || "", contactPerson: c.contactPerson || "" },
@@ -246,7 +247,7 @@ async function start() {
     openEditor(null, { fromDraft: {
       customer: { id: draft.customerId }, date: draft.date, refNo: draft.refNo, refDate: draft.refDate, placeOfSupply: draft.placeOfSupply,
       dispatchFrom: dispatchFromOf(draft.warehouse), shipTo: draft.shipToLines?.length ? { addressLines: draft.shipToLines } : null,
-      notes: draft.notes, termsDays: draft.termsDays ?? "", lines: draft.lines || []
+      notes: draft.notes, paymentTerms: draft.paymentTerms || "", lines: draft.lines || []
     } });
   }
   // Arriving from a Sales Order's "Create Proforma Invoice" button

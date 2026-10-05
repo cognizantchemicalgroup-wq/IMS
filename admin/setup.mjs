@@ -74,12 +74,15 @@ const packaging = [
   { name: "HDPE Drum", code: "PKG-HDD", hsn: "39233090", unit: "NOS", gstRate: 18, capacity: 200, capacityUnit: "LTR", description: "HDPE drum" },
   { name: "Carboy", code: "PKG-CBY", hsn: "39233090", unit: "NOS", gstRate: 18, capacity: 35, capacityUnit: "LTR", description: "HDPE carboy" },
   { name: "2.5 Litre Bottle", code: "PKG-B25", hsn: "39233090", unit: "NOS", gstRate: 18, capacity: 2.5, capacityUnit: "LTR", description: "2.5 L bottle" },
-  { name: "4 Litre Bottle", code: "PKG-B04", hsn: "39233090", unit: "NOS", gstRate: 18, capacity: 4, capacityUnit: "LTR", description: "4 L bottle" }
+  { name: "4 Litre Bottle", code: "PKG-B04", hsn: "39233090", unit: "NOS", gstRate: 18, capacity: 4, capacityUnit: "LTR", description: "4 L bottle" },
+  // Service items (used on Service POs; never stocked)
+  { name: "Transportation Charges", code: "SRV-TRN", hsn: "996511", unit: "TRIP", gstRate: 5, category: "Service", description: "Goods transport service" },
+  { name: "Other Services", code: "SRV-OTH", hsn: "9985", unit: "JOB", gstRate: 18, category: "Service", description: "Labour / maintenance / other service" }
 ];
 const existingItems = (await db.collection("items").get()).docs.map((d) => d.data().name.toLowerCase());
 for (const p of packaging) {
   if (existingItems.includes(p.name.toLowerCase())) continue;
-  await db.collection("items").add({ ...p, category: "Packaging", reorderLevel: null, active: true, createdAt: FieldValue.serverTimestamp() });
+  await db.collection("items").add({ category: "Packaging", ...p, reorderLevel: null, active: true, createdAt: FieldValue.serverTimestamp() });
   console.log(`seeded   item ${p.name}`);
 }
 console.log("\nDone. Only the users above can sign in.");

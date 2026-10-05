@@ -3,7 +3,8 @@
 // duplicate handling (skip or update) and an import report.
 import {
   db, reportError, initPage, pageHeader, esc, toast, openModal, badge, busy, formValues, can,
-  listCollection, logActivity, loadXLSX, exportExcel, downloadBlob, isoDate, GSTIN_PATTERN, STATE_CODES, ITEM_CATEGORIES, UNITS, PARTY_TYPES
+  listCollection, logActivity, loadXLSX, exportExcel, downloadBlob, isoDate, GSTIN_PATTERN, STATE_CODES, ITEM_CATEGORIES, UNITS, PARTY_TYPES,
+  normalizeTerms, termsDays, partyTerms, termsDatalist
 } from "./core.js";
 import { collection, doc, runTransaction, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -23,7 +24,7 @@ const PARTY_FIELDS = [
   { key: "state", label: "State", example: "Maharashtra", help: "Filled from GSTIN if blank" },
   { key: "stateCode", label: "State Code", aliases: ["gst state code"], example: "27", help: "2 digits, e.g. 27 Maharashtra, 24 Gujarat. Filled from GSTIN if blank" },
   { key: "country", label: "Country", default: "India", example: "India" },
-  { key: "paymentTermsDays", label: "Payment Terms (days)", type: "number", aliases: ["payment terms", "credit days", "credit period"], example: "30", help: "Number of days, e.g. 30 (\"Net 30\" also accepted)" },
+  { key: "paymentTerms", label: "Payment Terms", terms: true, aliases: ["payment terms (days)", "payment terms label", "credit days", "credit period", "terms"], example: "30 Days", help: "Days or text: 30 Days, Advance, Against delivery, any custom terms" },
   { key: "bankName", label: "Bank Name", example: "" },
   { key: "bankAccount", label: "Bank A/c No.", aliases: ["bank account", "account no", "bank account no"], example: "" },
   { key: "bankIfsc", label: "IFSC", upper: true, aliases: ["ifsc code"], example: "" },
@@ -83,6 +84,7 @@ function normalizeRecord(fields, raw) {
     v = String(v ?? "").replace(/\s*[\r\n]+\s*/g, ", ").trim();
     if (f.upper) v = v.toUpperCase().replace(/\s+/g, "");
     if (f.key === "name") v = v.replace(/\s+/g, " ");
+    if (f.terms) v = normalizeTerms(raw[f.key] ?? "");
     rec[f.key] = v;
   });
   if (fields === PARTY_FIELDS) {
@@ -96,6 +98,7 @@ function normalizeRecord(fields, raw) {
     }
     if (!rec.state && STATE_CODES[rec.stateCode]) rec.state = STATE_CODES[rec.stateCode];
     if (!rec.country) rec.country = "India";
+    rec.paymentTermsDays = termsDays(rec.paymentTerms); // days for due dates (null when the terms are text only)
   } else {
     const cat = ITEM_CATEGORIES.find((c) => c.toLowerCase() === String(rec.category).toLowerCase());
     if (cat) rec.category = cat;
@@ -144,7 +147,7 @@ function fromZoho(row) {
       email: g("EmailID"),
       address1: g("Billing Address"), address2: g("Billing Street2"), city: g("Billing City"), pincode: g("Billing Code"),
       state: g("Billing State"), stateCode: /^\d{2}-/.test(place) ? place.slice(0, 2) : "", country: g("Billing Country"),
-      paymentTermsDays: g("Payment Terms"),
+      paymentTerms: g("Payment Terms Label") || g("Payment Terms"),
       bankName: g("Vendor Bank Name"), bankAccount: g("Vendor Bank Account Number"), bankIfsc: g("Vendor Bank Code"),
       notes: g("Notes")
     },
@@ -153,7 +156,7 @@ function fromZoho(row) {
     zohoId: g("Contact ID")
   };
 }
-const ZOHO_COLUMNS = { name: "Display Name", partyType: "Contact Type", gstin: "GST Identification Number (GSTIN)", contactPerson: "First Name", phone: "MobilePhone", email: "EmailID", address1: "Billing Address", address2: "Billing Street2", city: "Billing City", pincode: "Billing Code", state: "Billing State", stateCode: "Place of Contact(With State Code)", country: "Billing Country", paymentTermsDays: "Payment Terms", bankIfsc: "Vendor Bank Code" };
+const ZOHO_COLUMNS = { name: "Display Name", partyType: "Contact Type", gstin: "GST Identification Number (GSTIN)", contactPerson: "First Name", phone: "MobilePhone", email: "EmailID", address1: "Billing Address", address2: "Billing Street2", city: "Billing City", pincode: "Billing Code", state: "Billing State", stateCode: "Place of Contact(With State Code)", country: "Billing Country", paymentTerms: "Payment Terms Label", bankIfsc: "Vendor Bank Code" };
 
 /** Find an existing record for an imported row: GSTIN first, then the same name (only if that record has no different GSTIN). */
 function findExisting(records, rec, zohoId, isParty) {
@@ -222,7 +225,8 @@ export async function startMasterPage(type) {
     const control = f.options
       ? `<select name="${f.key}">${f.options.map((o) => `<option value="${esc(o)}" ${String(o) === String(v) ? "selected" : ""}>${esc(o || (f.required ? "Select…" : "—"))}</option>`).join("")}</select>`
       : f.span === 3 && f.key !== "notes" ? `<textarea name="${f.key}">${esc(v)}</textarea>`
-        : `<input name="${f.key}" type="${f.type === "number" ? "number" : f.type === "email" ? "text" : "text"}" ${f.type === "number" ? 'step="any"' : ""} value="${esc(v)}" />`;
+        : f.terms ? `<input name="${f.key}" list="partyTerms" value="${esc(v)}" placeholder="30 Days / Advance / Against delivery" />${termsDatalist("partyTerms")}`
+          : `<input name="${f.key}" type="${f.type === "number" ? "number" : "text"}" ${f.type === "number" ? 'step="any"' : ""} value="${esc(v)}" />`;
     return `<label class="field ${f.span === 2 ? "span-2" : f.span === 3 ? "span-all" : ""}">${label}${control}${f.help ? `<small class="help">${esc(f.help)}</small>` : ""}</label>`;
   }
 
@@ -230,7 +234,7 @@ export async function startMasterPage(type) {
     const modal = openModal({
       title: record ? `Edit ${cfg.singular}` : `New ${cfg.singular}`,
       size: "wide",
-      body: `<form id="masterForm" class="form-grid">${cfg.fields.map((f) => fieldHtml(f, record?.[f.key])).join("")}
+      body: `<form id="masterForm" class="form-grid">${cfg.fields.map((f) => fieldHtml(f, f.terms ? partyTerms(record) : record?.[f.key])).join("")}
         ${record ? `<label class="field"><span>Status</span><select name="active"><option value="true" ${record.active !== false ? "selected" : ""}>Active</option><option value="false" ${record.active === false ? "selected" : ""}>Inactive</option></select></label>` : ""}</form>`,
       footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" id="saveMaster">Save ${cfg.singular}</button>`
     });
@@ -305,8 +309,8 @@ export async function startMasterPage(type) {
     guide["!cols"] = [{ wch: 26 }, { wch: 20 }, { wch: 60 }, { wch: 28 }];
     const example = XLSX.utils.aoa_to_sheet([header, ...(isParty ? [
       cfg.fields.map((f) => f.example || (f.key === "country" ? "India" : "")),
-      cfg.fields.map((f) => ({ name: "Deepak Fertilisers Ltd", partyType: "Customer", gstin: "27AAACD1234E1ZX", city: "Taloja", country: "India", paymentTermsDays: "45" })[f.key] || ""),
-      cfg.fields.map((f) => ({ name: "Gujarat Acids Pvt Ltd", partyType: "Both", gstin: "24AABCG1234H1Z5", city: "Vapi", country: "India", paymentTermsDays: "30" })[f.key] || "")
+      cfg.fields.map((f) => ({ name: "Deepak Fertilisers Ltd", partyType: "Customer", gstin: "27AAACD1234E1ZX", city: "Taloja", country: "India", paymentTerms: "Against delivery" })[f.key] || ""),
+      cfg.fields.map((f) => ({ name: "Gujarat Acids Pvt Ltd", partyType: "Both", gstin: "24AABCG1234H1Z5", city: "Vapi", country: "India", paymentTerms: "Advance" })[f.key] || "")
     ] : [cfg.fields.map((f) => f.example || "")])]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, cfg.title.slice(0, 31));

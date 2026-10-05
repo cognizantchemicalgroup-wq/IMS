@@ -6,6 +6,7 @@ import {
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
   reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES
 } from "./core.js";
+import { partyTerms, termsDatalist, isServiceItem } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js";
 import { quotationSpec, soSpec, showDocument, safeFileName } from "./pdf.js";
@@ -97,7 +98,7 @@ export async function startSalesPage(kind) {
           <label class="field"><span>Customer PO Date</span><input type="date" name="customerPoDate" value="${esc(d.customerPoDate || "")}" /></label>
           <label class="field"><span>Dispatch From</span><select name="warehouse">${warehouseOptions(d.warehouse || "")}</select></label>
           <label class="field"><span>Expected Dispatch</span><input type="date" name="expectedDate" value="${esc(d.expectedDate || addDays(isoDate(), 7))}" /></label>`}
-        <label class="field"><span>Payment Terms</span><input name="paymentTerms" value="${esc(d.paymentTerms || "30 Days")}" /></label>
+        <label class="field"><span>Payment Terms</span><input name="paymentTerms" list="soTerms" value="${esc(d.paymentTerms || "30 Days")}" placeholder="e.g. 30 Days, Advance, Against delivery" />${termsDatalist("soTerms")}</label>
         <label class="field"><span>Delivery Terms</span><input name="deliveryTerms" value="${esc(d.deliveryTerms || "Ex-Works")}" /></label>
         <label class="field"><span>Place Of Supply</span><input name="placeOfSupply" value="${esc(d.placeOfSupply || "")}" /></label>
         <label class="field"><span>Tax Type</span><input name="taxType" readonly /></label>
@@ -112,11 +113,11 @@ export async function startSalesPage(kind) {
     const form = modal.el.querySelector("#sForm");
     const customerOf = () => customers.find((c) => c.id === form.customerId.value);
     const intra = () => { const c = customerOf(); return !c || !c.stateCode || String(c.stateCode) === String(state.company.stateCode); };
-    const editor = createLineEditor(modal.el.querySelector("#lines"), { items, lines: d.lines || [], isIntraState: intra, itemFilter: (i) => i.category !== "Packaging" || isQ });
+    const editor = createLineEditor(modal.el.querySelector("#lines"), { items, lines: d.lines || [], isIntraState: intra, itemFilter: (i) => !isServiceItem(i) && (i.category !== "Packaging" || isQ) });
     const syncCustomer = () => {
       const c = customerOf();
       if (c && !form.placeOfSupply.value) form.placeOfSupply.value = c.stateCode ? `${STATE_CODES[c.stateCode] || c.state || ""} (${c.stateCode})` : c.state || "";
-      if (c?.paymentTermsDays && !editing) form.paymentTerms.value = `${c.paymentTermsDays} Days`;
+      if (partyTerms(c) && !editing && !fromDraft) form.paymentTerms.value = partyTerms(c);
       form.taxType.value = intra() ? "CGST + SGST (intra-state)" : "IGST (inter-state)";
       editor.refresh();
     };
@@ -126,12 +127,11 @@ export async function startSalesPage(kind) {
     form.docType?.addEventListener("change", () => {
       if (form.docType.value !== "PI") return;
       const v = formValues(form);
-      const days = Number.parseInt(v.paymentTerms, 10);
       modal.close();
       openOtherType("PI", {
         customerId: v.customerId, date: v.date, refNo: v.customerPoNo, refDate: v.customerPoDate, placeOfSupply: v.placeOfSupply,
         warehouse: v.warehouse, shipToLines: v.shipTo ? v.shipTo.split("\n").map((x) => x.trim()).filter(Boolean) : [], notes: v.notes,
-        termsDays: Number.isFinite(days) ? days : "", lines: editor.draft()
+        paymentTerms: v.paymentTerms, lines: editor.draft()
       });
     });
 
@@ -274,7 +274,7 @@ export async function startSalesPage(kind) {
     openEditor(null, { fromDraft: {
       customer: { id: draft.customerId }, date: draft.date, customerPoNo: draft.refNo, customerPoDate: draft.refDate, placeOfSupply: draft.placeOfSupply,
       warehouse: draft.warehouse, shipTo: draft.shipToLines?.length ? { addressLines: draft.shipToLines } : null, notes: draft.notes,
-      paymentTerms: draft.termsDays !== "" && draft.termsDays !== undefined ? `${draft.termsDays} Days` : undefined, lines: draft.lines || []
+      paymentTerms: draft.paymentTerms || undefined, lines: draft.lines || []
     } });
   }
   // Arriving from "Convert to Sales Order"

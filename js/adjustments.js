@@ -67,7 +67,7 @@ async function start() {
     const refreshItems = () => {
       const wh = f.warehouse.value;
       const excess = TYPES.find(([t]) => t === f.type.value)[1] > 0;
-      const list = items.filter((i) => i.active !== false && (excess || (wh && available(wh, i.id) > 0)));
+      const list = items.filter((i) => i.active !== false && i.category !== "Service" && (excess || (wh && available(wh, i.id) > 0)));
       f.itemId.innerHTML = `<option value="">${wh ? "Select item…" : "Select warehouse first"}</option>${wh ? list.map((i) => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.category)})</option>`).join("") : ""}`;
       f.avail.value = "";
     };

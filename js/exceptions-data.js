@@ -1,5 +1,5 @@
 // "Needs attention" rules shared by the Exceptions page and the Dashboard.
-import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate, isOnHold, HOLD_TEXT } from "./core.js";
+import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate, isOnHold, HOLD_TEXT, acceptedOf, isServicePo } from "./core.js";
 
 const n = (v) => Number(v) || 0;
 const daysSince = (value) => { const d = toDate(value) || (typeof value === "string" ? new Date(`${value}T00:00:00`) : null); return d ? Math.floor((Date.now() - d.getTime()) / 86400000) : 0; };
@@ -18,8 +18,12 @@ export function computeExceptions({ pos = [], receipts = [], adjustments = [], c
   const groups = [
     {
       key: "payment-hold", title: HOLD_TEXT, icon: "fa-hand", tone: "red",
-      help: "Vehicles rejected at the gate / GRN / Kanta. Accounts must not pay these receipts until a manager resolves the hold (Tally is not blocked automatically).",
-      rows: recs.filter(isOnHold).map((r) => ({ ref: r.geNo, href: "inward.html", text: `${r.vendor?.name} — invoice ${r.invoiceNo}: ${r.lines.map((l) => `${l.name} ${qty(l.invoiceQty)} ${l.unit}`).join(", ")} · ${r.rejection?.reason || ""}`, meta: `${r.poNo || "Without PO"} · rejected by ${r.rejection?.by?.name || ""}`, days: daysSince(r.rejection?.at || r.createdAt) }))
+      help: "Full rejections (vehicle) and partly rejected quantities. Accounts must not pay the rejected quantity until a manager resolves the hold (Tally is not blocked automatically).",
+      rows: recs.filter(isOnHold).map((r) => {
+        const rej = r.rejection || r.partialRejection || {};
+        const what = r.stage === "REJECTED" ? `full rejection: ${r.lines.map((l) => `${l.name} ${qty(l.invoiceQty)} ${l.unit}`).join(", ")}` : `partial rejection: ${r.lines.filter((l) => n(l.rejectedQty) > 0).map((l) => `${l.name} ${qty(l.rejectedQty)} of ${qty(l.kantaQty)} ${l.unit} rejected`).join(", ")}`;
+        return { ref: r.geNo, href: "inward.html", text: `${r.vendor?.name} — invoice ${r.invoiceNo} · ${what} · ${rej.reason || ""}`, meta: `${r.poNo || "Without PO"} · by ${rej.by?.name || ""}`, days: daysSince(rej.at || r.createdAt) };
+      })
     },
     {
       key: "po-overdue", title: "PO pending too long", icon: "fa-hourglass-half", tone: "red",
@@ -44,15 +48,15 @@ export function computeExceptions({ pos = [], receipts = [], adjustments = [], c
         .map((l) => { const v = round(n(l.kantaQty) - n(l.grnQty)); return { ref: r.grn?.grnNo || r.geNo, href: r.poId ? `purchase-orders.html?open=${r.poId}` : "inward.html", text: `${l.name}: GRN ${qty(l.grnQty)} → Kanta ${qty(l.kantaQty)} ${l.unit} (${v > 0 ? "EXCESS +" : "SHORT "}${qty(v)})`, meta: `${r.vendor?.name} · ${r.poNo || "no PO"}`, days: daysSince(r.kanta?.at) }; }))
     },
     {
-      key: "invoice-vs-kanta", title: "Invoice qty not matching Kanta (payable)", icon: "fa-file-circle-exclamation", tone: "red",
-      help: "Invoice quantity differs from the Kanta / payable quantity — check the vendor bill before payment (last 60 days).",
-      rows: recs.filter((r) => r.stage === "COMPLETED" && recent(r.kanta?.at, 60)).flatMap((r) => r.lines.filter((l) => Math.abs(n(l.kantaQty) - n(l.invoiceQty)) > 0.0005)
-        .map((l) => ({ ref: r.geNo, href: r.poId ? `purchase-orders.html?open=${r.poId}` : "inward.html", text: `${l.name}: invoice ${qty(l.invoiceQty)} vs payable ${qty(l.kantaQty)} ${l.unit} (difference ${qty(round(n(l.kantaQty) - n(l.invoiceQty)))})`, meta: `${r.vendor?.name} · invoice ${r.invoiceNo}`, days: daysSince(r.kanta?.at) })))
+      key: "invoice-vs-kanta", title: "Invoice qty not matching payable (accepted) qty", icon: "fa-file-circle-exclamation", tone: "red",
+      help: "Invoice quantity differs from the accepted Kanta quantity that is payable — check the vendor bill before payment (last 60 days).",
+      rows: recs.filter((r) => r.stage === "COMPLETED" && recent(r.kanta?.at, 60)).flatMap((r) => r.lines.filter((l) => Math.abs(acceptedOf(l) - n(l.invoiceQty)) > 0.0005)
+        .map((l) => ({ ref: r.geNo, href: l.poId ? `purchase-orders.html?open=${l.poId}` : "inward.html", text: `${l.name}: invoice ${qty(n(l.invoiceQty))} vs payable ${qty(acceptedOf(l))} ${l.unit} (difference ${qty(round(acceptedOf(l) - n(l.invoiceQty)))})${n(l.rejectedQty) ? ` · ${qty(l.rejectedQty)} rejected` : ""}`, meta: `${r.vendor?.name} · invoice ${r.invoiceNo}`, days: daysSince(r.kanta?.at) })))
     },
     {
       key: "po-partial", title: "PO partially received", icon: "fa-circle-half-stroke", tone: "blue",
       help: "POs where some material has arrived but not all.",
-      rows: openPos.filter((p) => p.status !== "OPEN").map((p) => ({ ref: p.poNo, href: `purchase-orders.html?open=${p.id}`, text: `${p.vendor?.name} — pending ${pendingOf(p) || "—"}`, meta: p.status, days: daysSince(p.date) }))
+      rows: openPos.filter((p) => p.status !== "OPEN" && !isServicePo(p)).map((p) => ({ ref: p.poNo, href: `purchase-orders.html?open=${p.id}`, text: `${p.vendor?.name} — pending ${pendingOf(p) || "—"}`, meta: p.status, days: daysSince(p.date) }))
     },
     {
       key: "stock-adjusted", title: "Stock manually adjusted", icon: "fa-pen-to-square", tone: "gold",

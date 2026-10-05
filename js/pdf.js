@@ -215,7 +215,7 @@ function companyAsParty() {
 export function poSpec(po) {
   const wh = po.deliverTo || {};
   return {
-    title: "Purchase Order",
+    title: po.poType === "SERVICE" ? "Service Purchase Order" : "Purchase Order",
     number: po.poNo,
     status: ["CANCELLED", "SHORT CLOSED"].includes(po.status) ? po.status : "",
     meta: [
@@ -224,7 +224,7 @@ export function poSpec(po) {
     ],
     leftTitle: "Vendor Address",
     left: po.vendor,
-    rightTitle: "Deliver To",
+    rightTitle: po.poType === "SERVICE" ? "Service For" : "Deliver To",
     right: { name: `${state.company.name}${wh.name ? ` (${wh.name})` : ""}`, addressLines: wh.addressLines || [], gstin: state.company.gstin, pan: state.company.pan, phone: state.company.phone, email: state.company.email },
     lines: po.totals.lines,
     totals: po.totals,
@@ -281,7 +281,7 @@ export function piSpec(pi) {
     copyLabel: "ORIGINAL",
     status: pi.status === "CANCELLED" ? "CANCELLED" : "",
     meta: [
-      ["Invoice number", pi.piNo], ["Invoice Date", fmtDate(pi.date)], ["Terms", pi.termsDays ? `${pi.termsDays} Days` : pi.paymentTerms], ["Due Date", fmtDate(pi.dueDate)],
+      ["Invoice number", pi.piNo], ["Invoice Date", fmtDate(pi.date)], ["Terms", pi.paymentTerms || (pi.termsDays ? `${pi.termsDays} Days` : "")], ["Due Date", fmtDate(pi.dueDate)],
       ["Reference no. & Date", [pi.refNo, pi.refDate ? fmtDate(pi.refDate) : ""].filter(Boolean).join("  ")],
       ["Place Of Supply", pi.placeOfSupply], ["Dispatched Through", pi.dispatchThrough], ["Dispatch Doc No", pi.dispatchDocNo || pi.piNo], ["Destination", pi.destination], ["Dispatch From", pi.dispatchFrom]
     ],

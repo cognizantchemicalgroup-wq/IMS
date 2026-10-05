@@ -1,13 +1,14 @@
 import {
-  db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
+  db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can,
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
   reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES,
   OPEN_PO_STATUSES, normalizeReceipt, PO_SERIES, formatNumber, counterId, numberPeriodLabel, accountsBadge, isOnHold, receiptStageLabel,
-  TRANSPORT_MODES, HOLD_TEXT
+  TRANSPORT_MODES, HOLD_TEXT, CLOSED_PO_STATUSES, poLineQty, fmtDiff, diffColor, acceptedOf, isServicePo, isServiceItem,
+  partyTerms, termsDatalist
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { poSpec, showDocument, safeFileName } from "./pdf.js";
-import { collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const n = (v) => Number(v) || 0;
 const page = await initPage("po");
@@ -20,18 +21,19 @@ async function start() {
   let tab = "ACTIVE";
   const canEdit = can("commercial");
 
-  page.innerHTML = `${pageHeader("Purchase", "Purchase Orders", "Create, send and track POs until every unit has arrived.",
+  page.innerHTML = `${pageHeader("Purchase", "Purchase Orders", "Goods POs are tracked until every unit has arrived; Service POs (transport and other services) are closed on bill / service confirmation.",
     `<button class="btn" id="exportBtn"><i class="fa-solid fa-download"></i> Export</button>${canEdit ? '<button class="btn primary" id="newPo"><i class="fa-solid fa-plus"></i> New Purchase Order</button>' : ""}`)}
     <div class="tabs" id="tabs"></div>
     <div class="card">
       <div class="card-head"><div class="toolbar"><input class="input search" id="search" placeholder="Search PO no, vendor, item…" />
         <select class="input" id="whFilter"><option value="">All delivery locations</option>${warehouseOptions("", { includeBlank: false })}</select>
+        <select class="input" id="typeFilter"><option value="">Goods & Service</option><option value="GOODS">Goods POs</option><option value="SERVICE">Service POs</option></select>
         <select class="input" id="seriesFilter"><option value="">All PO series</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div><span class="small muted" id="count"></span></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>PO No.</th><th>Date</th><th>Vendor</th><th>Deliver To</th><th>Items</th><th class="num">Value (₹)</th><th>Received</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
-  const TABS = [["ACTIVE", "All open"], ["OPEN", "Open"], ["PARTIALLY RECEIVED", "Partially received"], ["AWAITING KANTA", "Awaiting Kanta"], ["PARTIALLY INWARDED", "Partially inwarded"], ["COMPLETED", "Completed"], ["CLOSED", "Closed"], ["CANCELLED", "Cancelled"], ["ALL", "All"]];
-  const inTab = (po, t) => t === "ALL" || (t === "ACTIVE" ? OPEN_PO_STATUSES.includes(po.status) : t === "CLOSED" ? ["CLOSED", "SHORT CLOSED"].includes(po.status) : po.status === t);
+  const TABS = [["ACTIVE", "All open"], ["OPEN", "Open"], ["PARTIALLY RECEIVED", "Partially received"], ["AWAITING KANTA", "Awaiting Kanta"], ["PARTIALLY INWARDED", "Partially inwarded"], ["COMPLETED", "Completed"], ["CLOSED", "Closed with balance"], ["CANCELLED", "Cancelled"], ["ALL", "All"]];
+  const inTab = (po, t) => t === "ALL" || (t === "ACTIVE" ? OPEN_PO_STATUSES.includes(po.status) : t === "CLOSED" ? CLOSED_PO_STATUSES.includes(po.status) : t === "COMPLETED" ? ["COMPLETED", "SERVICE COMPLETED"].includes(po.status) : po.status === t);
 
   function lineProgress(po) {
     const ordered = po.lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -44,7 +46,8 @@ async function start() {
     const term = page.querySelector("#search").value.trim().toLowerCase();
     const wh = page.querySelector("#whFilter").value;
     const series = page.querySelector("#seriesFilter").value;
-    const list = pos.filter((p) => inTab(p, tab) && (!wh || p.warehouse === wh) && (!series || p.series === series)
+    const type = page.querySelector("#typeFilter").value;
+    const list = pos.filter((p) => inTab(p, tab) && (!wh || p.warehouse === wh) && (!series || p.series === series) && (!type || (type === "SERVICE") === isServicePo(p))
       && (!term || [p.poNo, p.vendor?.name, p.refNo, ...p.lines.map((l) => l.name)].some((v) => String(v || "").toLowerCase().includes(term))));
     page.querySelector("#count").textContent = `${list.length} purchase order${list.length === 1 ? "" : "s"}`;
     const rows = page.querySelector("#rows");
@@ -53,13 +56,13 @@ async function start() {
       const { ordered, received } = lineProgress(p);
       const single = p.lines.length === 1 ? p.lines[0] : null;
       return `<tr>
-        <td class="strong nowrap"><a href="#" data-view="${esc(p.id)}">${esc(p.poNo)}</a>${p.series ? `<div class="small muted">${esc(PO_SERIES[p.series]?.label || p.series)}</div>` : ""}</td>
+        <td class="strong nowrap"><a href="#" data-view="${esc(p.id)}">${esc(p.poNo)}</a>${p.series ? `<div class="small muted">${esc(PO_SERIES[p.series]?.label || p.series)}</div>` : ""}${isServicePo(p) ? ' <span class="badge indigo">SERVICE</span>' : ""}</td>
         <td class="nowrap">${fmtDate(p.date)}</td>
         <td>${esc(p.vendor?.name)}</td>
         <td>${esc(warehouseByCode(p.warehouse).name)}</td>
         <td>${single ? `${esc(single.name)}<div class="small muted">${qty(single.qty)} ${esc(single.unit)}</div>` : `${p.lines.length} items`}</td>
         <td class="num">${money(p.totals?.total)}</td>
-        <td>${progressBar(received, ordered)}<div class="progress-label">${single ? `${qty(single.receivedQty || 0)} / ${qty(single.qty)} ${esc(single.unit)}` : `${Math.round((received / (ordered || 1)) * 100)}%`}</div></td>
+        <td>${isServicePo(p) ? `<span class="small muted">${p.status === "SERVICE COMPLETED" ? `Bill ${esc(p.serviceCompletion?.billNo || "")}` : "Service — no inward"}</span>` : `${progressBar(received, ordered)}<div class="progress-label">${single ? `${qty(single.receivedQty || 0)} / ${qty(single.qty)} ${esc(single.unit)}` : `${Math.round((received / (ordered || 1)) * 100)}%`}</div>`}</td>
         <td>${badge(p.status)}</td>
         <td><div class="actions"><button class="btn sm" data-pdf="${esc(p.id)}" title="PDF"><i class="fa-solid fa-file-pdf"></i></button><button class="btn sm" data-view="${esc(p.id)}">Open</button></div></td>
       </tr>`;
@@ -86,15 +89,19 @@ async function start() {
   page.querySelector("#search").addEventListener("input", render);
   page.querySelector("#whFilter").addEventListener("change", render);
   page.querySelector("#seriesFilter").addEventListener("change", render);
+  page.querySelector("#typeFilter").addEventListener("change", render);
   page.querySelector("#newPo")?.addEventListener("click", () => openEditor());
   page.querySelector("#exportBtn").addEventListener("click", () => {
-    const rows = pos.flatMap((p) => p.lines.map((l) => ({
-      "PO No": p.poNo, Series: PO_SERIES[p.series]?.label || "", Date: fmtDate(p.date), Vendor: p.vendor?.name, "Vendor GSTIN": p.vendor?.gstin || "", "Deliver To": warehouseByCode(p.warehouse).name,
-      Item: l.name, HSN: l.hsn, Unit: l.unit, "Ordered Qty": l.qty, Rate: l.rate, "GST %": l.gstRate, "Line Amount": round(l.qty * l.rate, 2),
-      "Invoiced Qty": l.invoicedQty || 0, "GRN Qty": l.grnQty || 0, "Kanta Qty": round((l.grnQty || 0) - (l.pendingKantaQty || 0) + (l.varianceQty || 0)),
-      "Short(-)/Excess(+)": l.varianceQty || 0, "Inward (Payable) Qty": l.receivedQty || 0, "Awaiting Kanta": l.pendingKantaQty || 0,
-      "Pending Qty": Math.max(0, round(l.qty - (l.receivedQty || 0))), "Payable Value (before GST)": round((l.receivedQty || 0) * l.rate, 2), "PO Total": p.totals?.total, Status: p.status
-    })));
+    const rows = pos.flatMap((p) => p.lines.map((l) => {
+      const q = poLineQty(l, p.status);
+      return {
+        "PO No": p.poNo, Type: isServicePo(p) ? "Service" : "Goods", Series: PO_SERIES[p.series]?.label || "", Date: fmtDate(p.date), Vendor: p.vendor?.name, "Vendor GSTIN": p.vendor?.gstin || "", "Deliver To": warehouseByCode(p.warehouse).name,
+        "Payment Terms": p.paymentTerms || "", Item: l.name, HSN: l.hsn, Unit: l.unit, "Ordered Qty": q.ordered, Rate: l.rate, "GST %": l.gstRate, "Line Amount": round(q.ordered * n(l.rate), 2),
+        "Invoiced Qty": q.invoiced, "GRN Qty": q.grn, "Kanta Qty": q.kanta, "Short(-)/Excess(+)": q.shortExcess, "Rejected Qty": q.rejected, "Accepted (Inward) Qty": q.accepted, "Awaiting Kanta": q.awaitingKanta,
+        "Closed Balance (not received)": q.closedBalance, "Pending Qty": q.pending, "Payable Value (before GST)": round(q.accepted * n(l.rate), 2), "PO Total": p.totals?.total, Status: p.status,
+        "Closed By": p.closedBy?.name || "", "Close Reason": p.closeReason || "", "Service Bill": p.serviceCompletion?.billNo || ""
+      };
+    }));
     if (!rows.length) { toast("Nothing to export."); return; }
     exportExcel(rows, `CCPL_Purchase_Orders_${isoDate()}.xlsx`, "Purchase Orders");
   });
@@ -113,10 +120,12 @@ async function start() {
         <div class="form-grid">
           ${editing ? `<label class="field"><span>PO Series</span><input readonly value="${esc(PO_SERIES[po.series]?.label || "—")} · ${esc(po.poNo)}" /><small class="help">The PO number never changes when a PO is edited.</small></label>`
             : `<label class="field"><span>PO Series <b class="req">*</b></span><select name="series"><option value="">Select series…</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}" ${duplicate && po.series === k ? "selected" : ""}>${esc(v.label)} — e.g. ${esc(v.example)}</option>`).join("")}</select><small class="help" data-nextno>The number is assigned when the PO is saved.</small></label>`}
+          ${editing ? `<label class="field"><span>PO Type</span><input readonly value="${isServicePo(po) ? "Service PO" : "Goods PO"}" /></label>`
+            : `<label class="field"><span>PO Type <b class="req">*</b></span><select name="poType"><option value="GOODS" ${isServicePo(po) ? "" : "selected"}>Goods PO (material inward, GRN, Kanta)</option><option value="SERVICE" ${isServicePo(po) ? "selected" : ""}>Service PO (transport / other services — no inward)</option></select></label>`}
           <label class="field span-2"><span>Vendor <b class="req">*</b></span><select name="vendorId" required><option value="">Select vendor…</option>${vendors.filter((v) => v.active !== false || v.id === po.vendor?.id).sort((a, b) => a.name.localeCompare(b.name)).map((v) => `<option value="${esc(v.id)}" ${v.id === po.vendor?.id ? "selected" : ""}>${esc(v.name)}${v.gstin ? ` · ${esc(v.gstin)}` : ""}</option>`).join("")}</select></label>
           <label class="field"><span>PO Date <b class="req">*</b></span><input type="date" name="date" value="${esc(editing ? po.date : isoDate())}" required /></label>
           <label class="field"><span>Deliver To <b class="req">*</b></span><select name="warehouse" required>${warehouseOptions(firstWh, { includeBlank: false })}</select></label>
-          <label class="field"><span>Payment Terms</span><input name="paymentTerms" value="${esc(po.paymentTerms || "30 Days")}" /></label>
+          <label class="field"><span>Payment Terms</span><input name="paymentTerms" list="poTerms" value="${esc(po.paymentTerms || "30 Days")}" placeholder="e.g. 30 Days, Advance, Against delivery" />${termsDatalist("poTerms")}</label>
           <label class="field"><span>Ref#</span><input name="refNo" value="${esc(editing ? po.refNo || "" : "")}" placeholder="Defaults to PO number" /></label>
           <label class="field"><span>Place Of Supply</span><input name="placeOfSupply" value="${esc(po.placeOfSupply || `${state.company.state} (${state.company.stateCode})`)}" /></label>
           <label class="field"><span>Dispatch Through</span><input name="dispatchThrough" value="${esc(po.dispatchThrough || "PARTY TRANSPORT")}" /></label>
@@ -143,14 +152,22 @@ async function start() {
       form.taxType.value = intra() ? "CGST + SGST (intra-state)" : `IGST (inter-state · ${STATE_CODES[v.stateCode] || v.stateCode})`;
       editor.refresh();
     };
-    const editor = createLineEditor(modal.el.querySelector("#lines"), {
-      items,
-      lines: (po.lines || []).map((l) => (duplicate ? { ...l, lineId: undefined } : l)),
-      isIntraState: intra
+    const serviceType = () => (form.poType ? form.poType.value === "SERVICE" : isServicePo(po));
+    let editor;
+    const makeEditor = (lines) => {
+      editor = createLineEditor(modal.el.querySelector("#lines"), {
+        items, lines, isIntraState: intra,
+        itemFilter: (i) => (serviceType() ? isServiceItem(i) : !isServiceItem(i))
+      });
+    };
+    makeEditor((po.lines || []).map((l) => (duplicate ? { ...l, lineId: undefined } : l)));
+    form.poType?.addEventListener("change", () => {
+      makeEditor([]);
+      if (serviceType() && !items.some((i) => isServiceItem(i) && i.active !== false)) toast("Add service items first (Items & Packaging → category Service, e.g. Transportation Charges).", "error");
     });
     form.vendorId.addEventListener("change", () => {
-      const v = vendorOf();
-      if (v?.paymentTermsDays) form.paymentTerms.value = `${v.paymentTermsDays} Days`;
+      const terms = partyTerms(vendorOf());
+      if (terms) form.paymentTerms.value = terms;
       setTaxType();
     });
     form.warehouse.addEventListener("change", () => { form.destination.value = warehouseByCode(form.warehouse.value).destination || form.destination.value; showNext(); });
@@ -194,7 +211,7 @@ async function start() {
         paymentTerms: values.paymentTerms, placeOfSupply: values.placeOfSupply, dispatchThrough: values.dispatchThrough,
         destination: values.destination, deliveryTerms: values.deliveryTerms, expectedDate: values.expectedDate || "",
         notes: values.notes, terms: values.terms, intraState: intra(),
-        lines: lines.map((l) => ({ ...l, invoicedQty: 0, grnQty: 0, pendingKantaQty: 0, receivedQty: 0, varianceQty: 0 })),
+        lines: lines.map((l) => ({ ...l, invoicedQty: 0, grnQty: 0, pendingKantaQty: 0, receivedQty: 0, varianceQty: 0, rejectedQty: 0, closedBalanceQty: 0 })),
         totals,
         itemIds: [...new Set(lines.map((l) => l.itemId))],
         updatedAt: serverTimestamp()
@@ -206,8 +223,10 @@ async function start() {
             const ref = doc(db, "purchaseOrders", po.id);
             const snap = await tx.get(ref);
             const cur = snap.data();
-            if (cur.status !== "OPEN" || cur.lines.some((l) => (l.invoicedQty || 0) > 0)) throw new Error("This PO already has material inward against it and can no longer be edited. Short-close it and raise a new PO instead.");
+            if (cur.status !== "OPEN" || cur.lines.some((l) => (l.invoicedQty || 0) > 0)) throw new Error("This PO already has material inward against it and can no longer be edited. Close it with balance and raise a new PO instead.");
             data.refNo = values.refNo || cur.poNo;
+            // keep rejected-vehicle history of unchanged lines
+            data.lines = data.lines.map((l) => ({ ...l, rejectedQty: n(cur.lines.find((x) => x.lineId === l.lineId)?.rejectedQty) }));
             tx.update(ref, data);
             logActivity(tx, { module: "Purchase Orders", action: "UPDATE", refId: ref.id, refNo: cur.poNo, summary: `Edited PO ${cur.poNo} · ${vendor.name} · ₹${money(totals.total)}` });
             return { id: ref.id, poNo: cur.poNo };
@@ -216,8 +235,8 @@ async function start() {
           const series = PO_SERIES[values.series];
           const number = await reserveNumber(tx, series.type, { date: values.date, site: wh.docCode });
           commitNumber(tx, number, ref.id);
-          tx.set(ref, { ...data, poNo: number.number, series: values.series, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
-          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created PO ${number.number} (${series.label}) · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
+          tx.set(ref, { ...data, poType: values.poType === "SERVICE" ? "SERVICE" : "GOODS", poNo: number.number, series: values.series, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
+          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created ${values.poType === "SERVICE" ? "Service PO" : "PO"} ${number.number} (${series.label}) · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
           return { id: ref.id, poNo: number.number };
         });
         toast(`${saved.poNo} saved.`, "ok");
@@ -232,74 +251,110 @@ async function start() {
   /* ---------------- Detail ---------------- */
   async function openDetail(po) {
     if (!po) return;
-    const [receiptSnap, logSnap] = await Promise.all([
+    const [byList, byLegacy, logSnap] = await Promise.all([
+      getDocs(query(collection(db, "receipts"), where("poIds", "array-contains", po.id))),
       getDocs(query(collection(db, "receipts"), where("poId", "==", po.id))),
       getDocs(query(collection(db, "activity"), where("refId", "==", po.id)))
     ]);
-    const receipts = receiptSnap.docs.map((d) => normalizeReceipt({ id: d.id, ...d.data() })).sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    const receiptMap = new Map([...byList.docs, ...byLegacy.docs].map((d) => [d.id, normalizeReceipt({ id: d.id, ...d.data() })]));
+    const receipts = [...receiptMap.values()].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+    const mineOf = (r) => r.lines.filter((l) => l.poId === po.id);
     const log = logSnap.docs.map((d) => d.data()).sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0));
     const inProcess = receipts.filter((r) => ["KANTA PENDING", "GRN PENDING"].includes(r.stage));
     const onHold = receipts.filter(isOnHold);
-    const transportTotal = round(receipts.filter((r) => !["CANCELLED"].includes(r.stage)).reduce((s, r) => s + n(r.transportAmount), 0), 2);
+    const service = isServicePo(po);
+    const transportTotal = round(receipts.filter((r) => r.stage !== "CANCELLED").reduce((s, r) => s + n(r.transportAmount), 0), 2);
+    const open = OPEN_PO_STATUSES.includes(po.status);
     const editable = canEdit && po.status === "OPEN" && !po.lines.some((l) => (l.invoicedQty || 0) > 0);
-    const closable = can("close") && OPEN_PO_STATUSES.includes(po.status);
+    const closable = can("close") && open && !service && !editable;
+    const serviceDone = can("close") && open && service;
+    const reopenable = can("close") && [...CLOSED_PO_STATUSES, "SERVICE COMPLETED"].includes(po.status);
+    const qs = po.lines.map((l) => poLineQty(l, po.status));
+    const totalOf = (k) => round(qs.reduce((s, q) => s + q[k], 0));
+    const closedNote = CLOSED_PO_STATUSES.includes(po.status)
+      ? `<div class="notice warn" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div><b>Closed with Balance</b> by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}.
+         Balance closed without receipt: ${po.lines.map((l, i) => `${esc(l.name)} ${qty(qs[i].closedBalance)} ${esc(l.unit)}`).join(", ")}. It is kept in history and is not pending. ${reopenable ? "Reopen to make it pending again." : ""}</div></div>` : "";
     const modal = openModal({
-      title: `${po.poNo}`,
+      title: `${po.poNo}${service ? " · Service PO" : ""}`,
       size: "full",
-      body: `<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">${badge(po.status)}<span class="muted">${esc(po.vendor?.name)} · Deliver to ${esc(warehouseByCode(po.warehouse).name)} · ₹${money(po.totals?.total)}</span></div>
-        ${["CLOSED", "SHORT CLOSED"].includes(po.status) ? `<div class="notice warn" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div>Closed by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}</div></div>` : ""}
+      body: `<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">${badge(po.status)}${service ? badge("SERVICE") : ""}<span class="muted">${esc(po.vendor?.name)} · ${service ? "Service at" : "Deliver to"} ${esc(warehouseByCode(po.warehouse).name)} · ₹${money(po.totals?.total)}</span></div>
+        ${closedNote}
         ${po.status === "CANCELLED" ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-ban"></i><div>Cancelled by <b>${esc(po.closedBy?.name)}</b> on ${fmtDateTime(po.closedAt)} — ${esc(po.closeReason)}</div></div>` : ""}
+        ${po.status === "SERVICE COMPLETED" ? `<div class="notice ok" style="margin-bottom:14px"><i class="fa-solid fa-circle-check"></i><div><b>Service completed</b> — confirmed by ${esc(po.serviceCompletion?.by?.name)} on ${fmtDateTime(po.serviceCompletion?.at)}. Bill ${esc(po.serviceCompletion?.billNo)} dated ${fmtDate(po.serviceCompletion?.billDate)}${po.serviceCompletion?.billAmount !== null && po.serviceCompletion?.billAmount !== undefined ? ` · ₹${money(po.serviceCompletion.billAmount)}` : ""}${po.serviceCompletion?.note ? ` — ${esc(po.serviceCompletion.note)}` : ""}</div></div>` : ""}
         <div class="detail-grid" style="margin-bottom:18px">
           <div><span>PO Date</span><b>${fmtDate(po.date)}</b></div><div><span>Payment Terms</span><b>${esc(po.paymentTerms || "—")}</b></div>
-          <div><span>Expected Delivery</span><b>${fmtDate(po.expectedDate)}</b></div><div><span>Created By</span><b>${esc(po.createdBy?.name || "—")}</b></div>
+          <div><span>Expected ${service ? "Completion" : "Delivery"}</span><b>${fmtDate(po.expectedDate)}</b></div><div><span>Created By</span><b>${esc(po.createdBy?.name || "—")}</b></div>
           <div><span>Vendor GSTIN</span><b>${esc(po.vendor?.gstin || "—")}</b></div><div><span>Tax</span><b>${po.intraState ? "CGST + SGST" : "IGST"}</b></div>
-          <div><span>PO Series</span><b>${esc(PO_SERIES[po.series]?.label || "—")}</b></div><div><span>Transport cost (internal, not on PO)</span><b>₹${money(transportTotal)}</b></div>
+          <div><span>PO Series · Type</span><b>${esc(PO_SERIES[po.series]?.label || "—")} · ${service ? "Service" : "Goods"}</b></div>${service ? "" : `<div><span>Transport cost (internal, not on PO)</span><b>₹${money(transportTotal)}</b></div>`}
         </div>
-        ${onHold.length ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-hand"></i><div><b>${HOLD_TEXT}</b> — ${onHold.map((r) => `${esc(r.geNo)} (invoice ${esc(r.invoiceNo)})`).join(", ")}. Rejected quantity is not counted as received; the PO quantity stays pending. Other receipts on this PO are not affected.</div></div>` : ""}
-        <div class="section-title">Item-wise tracking (Kanta is final)</div>
-        <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Inward</th><th class="num">Awaiting Kanta</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
-          ${po.lines.map((l) => {
-            const kanta = round(n(l.grnQty) - n(l.pendingKantaQty) + n(l.varianceQty));
-            const v = n(l.varianceQty);
-            return `<tr><td class="strong">${esc(l.name)}</td><td class="num">${qty(l.qty)} ${esc(l.unit)}</td><td class="num">${qty(n(l.invoicedQty))}</td><td class="num">${qty(n(l.grnQty))}</td><td class="num">${qty(kanta)}</td>
-              <td class="num strong" style="color:${v < 0 ? "var(--danger)" : v > 0 ? "var(--success)" : "inherit"}">${v > 0 ? "+" : ""}${qty(v)}</td><td class="num strong">${qty(n(l.receivedQty))}</td><td class="num">${qty(n(l.pendingKantaQty))}</td>
-              <td class="num strong">${qty(Math.max(0, round(l.qty - n(l.receivedQty))))}</td><td class="num">${money(n(l.receivedQty) * n(l.rate))}</td><td>${progressBar(n(l.receivedQty), l.qty)}</td></tr>`;
+        ${onHold.length ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-hand"></i><div><b>${HOLD_TEXT}</b> — ${onHold.map((r) => `${esc(r.geNo)} (invoice ${esc(r.invoiceNo)}${r.stage === "COMPLETED" ? ", rejected quantity only" : ""})`).join(", ")}. Rejected quantity is not counted as received; the PO quantity stays pending. Other receipts on this PO are not affected.</div></div>` : ""}
+        ${service ? `<div class="section-title">Services ordered</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
+          ${po.lines.map((l) => `<tr><td class="strong">${esc(l.name)}<div class="small muted">${esc(l.description || "")}</div></td><td class="num">${qty(n(l.qty))} ${esc(l.unit)}</td><td class="num">${money(l.rate)}</td><td class="num">${money(n(l.qty) * n(l.rate))}</td></tr>`).join("")}
+        </tbody></table></div><p class="small muted">A Service PO needs no inward, GRN or Kanta. When the bill / service confirmation is received, mark the service completed to close the PO.</p>`
+        : `<div class="section-title">Item-wise tracking (Kanta is final; only accepted quantity counts)</div>
+        <div class="table-wrap"><table class="table" id="poLines"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Rejected</th><th class="num">Accepted (Inward)</th><th class="num">Awaiting Kanta</th><th class="num">Closed Balance</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
+          ${po.lines.map((l, i) => {
+            const q = qs[i];
+            return `<tr data-line="${esc(l.name)}"><td class="strong">${esc(l.name)}</td><td class="num">${qty(q.ordered)} ${esc(l.unit)}</td><td class="num">${qty(q.invoiced)}</td><td class="num">${qty(q.grn)}</td><td class="num">${qty(q.kanta)}</td>
+              <td class="num strong" style="color:${diffColor(q.shortExcess)}">${fmtDiff(q.shortExcess)}</td><td class="num" style="color:${q.rejected ? "var(--danger)" : "inherit"}">${qty(q.rejected)}</td><td class="num strong">${qty(q.accepted)}</td><td class="num">${qty(q.awaitingKanta)}</td>
+              <td class="num" style="color:${q.closedBalance ? "#8a6a22" : "inherit"}">${qty(q.closedBalance)}</td><td class="num strong">${qty(q.pending)}</td><td class="num">${money(q.accepted * n(l.rate))}</td><td>${progressBar(q.accepted, q.ordered)}</td></tr>`;
           }).join("")}
+          ${po.lines.length > 1 ? `<tr class="strong"><td>Total</td><td class="num">${qty(totalOf("ordered"))}</td><td class="num">${qty(totalOf("invoiced"))}</td><td class="num">${qty(totalOf("grn"))}</td><td class="num">${qty(totalOf("kanta"))}</td><td class="num">${fmtDiff(totalOf("shortExcess"))}</td><td class="num">${qty(totalOf("rejected"))}</td><td class="num">${qty(totalOf("accepted"))}</td><td class="num">${qty(totalOf("awaitingKanta"))}</td><td class="num">${qty(totalOf("closedBalance"))}</td><td class="num">${qty(totalOf("pending"))}</td><td></td><td></td></tr>` : ""}
         </tbody></table></div>
         <div class="section-title">Invoices / receipts (${receipts.length})</div>
-        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th>GRN No.</th><th>Transport (internal)</th><th>Stage</th><th>Accounts</th></tr></thead><tbody>
-          ${receipts.flatMap((r) => r.lines.map((l, i) => {
-            const v = l.kantaQty !== undefined ? round(l.kantaQty - l.grnQty) : null;
-            return `<tr>${i === 0 ? `<td class="strong nowrap" rowspan="${r.lines.length}">${esc(r.geNo)}</td><td class="nowrap" rowspan="${r.lines.length}">${fmtDateTime(r.createdAt)}</td><td rowspan="${r.lines.length}">${esc(r.invoiceNo)}</td>` : ""}
-              <td>${esc(l.name)}</td><td class="num">${qty(l.invoiceQty)}</td><td class="num">${l.grnQty !== undefined ? qty(l.grnQty) : "—"}</td><td class="num">${l.kantaQty !== undefined ? qty(l.kantaQty) : "—"}</td>
-              <td class="num" style="color:${v < 0 ? "var(--danger)" : v > 0 ? "var(--success)" : "inherit"}">${v === null ? "—" : `${v > 0 ? "+" : ""}${qty(v)}`}</td>
-              ${i === 0 ? `<td class="nowrap" rowspan="${r.lines.length}">${esc(r.grn?.grnNo || "—")}</td><td class="small" rowspan="${r.lines.length}">${r.transportMode ? `${esc(TRANSPORT_MODES[r.transportMode])}${r.transportAmount !== null && r.transportAmount !== undefined ? `<div>₹${money(r.transportAmount)}</div>` : ""}` : "—"}</td><td rowspan="${r.lines.length}">${badge(receiptStageLabel(r))}${r.rejection ? `<div class="small muted">${esc(r.rejection.reason)}</div>` : ""}</td><td rowspan="${r.lines.length}">${accountsBadge(r)}</td>` : ""}</tr>`;
-          })).join("")}
-        </tbody></table></div>` : '<p class="muted">No material has arrived against this PO yet.</p>'}
+        ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th class="num">Rejected</th><th class="num">Accepted</th><th>GRN No.</th><th>Transport (internal)</th><th>Stage</th><th>Accounts</th></tr></thead><tbody>
+          ${receipts.flatMap((r) => { const mine = mineOf(r); return mine.map((l, i) => {
+            const weighed = l.kantaQty !== undefined;
+            const v = weighed ? round(n(l.kantaQty) - n(l.grnQty)) : null;
+            const others = [...new Set(r.lines.filter((x) => x.poId && x.poId !== po.id).map((x) => x.poNo))];
+            return `<tr>${i === 0 ? `<td class="strong nowrap" rowspan="${mine.length}">${esc(r.geNo)}${others.length ? `<div class="small muted">same bill also on ${esc(others.join(", "))}</div>` : ""}</td><td class="nowrap" rowspan="${mine.length}">${fmtDateTime(r.createdAt)}</td><td rowspan="${mine.length}">${esc(r.invoiceNo)}</td>` : ""}
+              <td>${esc(l.name)}</td><td class="num">${qty(n(l.invoiceQty))}</td><td class="num">${l.grnQty !== undefined ? qty(n(l.grnQty)) : "—"}</td><td class="num">${weighed ? qty(n(l.kantaQty)) : "—"}</td>
+              <td class="num" style="color:${diffColor(v)}">${v === null ? "—" : fmtDiff(v)}</td><td class="num">${qty(n(l.rejectedQty))}</td><td class="num strong">${r.stage === "COMPLETED" ? qty(acceptedOf(l)) : r.stage === "REJECTED" ? "0" : "—"}</td>
+              ${i === 0 ? `<td class="nowrap" rowspan="${mine.length}">${esc(r.grn?.grnNo || "—")}</td><td class="small" rowspan="${mine.length}">${r.transportMode ? `${esc(TRANSPORT_MODES[r.transportMode])}${r.transportAmount !== null && r.transportAmount !== undefined ? `<div>₹${money(r.transportAmount)}</div>` : ""}` : "—"}</td><td rowspan="${mine.length}">${badge(receiptStageLabel(r))}${r.rejection || r.partialRejection ? `<div class="small muted">${esc((r.rejection || r.partialRejection).reason)}</div>` : ""}</td><td rowspan="${mine.length}">${accountsBadge(r)}</td>` : ""}</tr>`;
+          }); }).join("")}
+        </tbody></table></div>` : '<p class="muted">No material has arrived against this PO yet.</p>'}`}
         <div class="section-title">History</div>
         <ul class="timeline">${log.map((a) => `<li><time>${fmtDateTime(a.at)}</time><div><b>${esc(a.userName)}</b> · ${esc(a.summary)}</div></li>`).join("") || '<li class="muted">No history.</li>'}</ul>`,
       footer: `<button class="btn" data-close>Close</button>
         ${canEdit ? '<button class="btn" id="dupPo"><i class="fa-regular fa-copy"></i> Duplicate</button>' : ""}
         ${editable ? '<button class="btn" id="editPo"><i class="fa-solid fa-pen"></i> Edit</button>' : ""}
         ${editable ? '<button class="btn danger" id="cancelPo"><i class="fa-solid fa-ban"></i> Cancel PO</button>' : ""}
-        ${closable && !editable ? '<button class="btn gold" id="closePo"><i class="fa-solid fa-flag-checkered"></i> Close PO (mark complete)</button>' : ""}
-        ${isAdmin() && ["CLOSED", "SHORT CLOSED"].includes(po.status) ? '<button class="btn" id="reopenPo">Reopen</button>' : ""}
+        ${closable ? '<button class="btn gold" id="closePo"><i class="fa-solid fa-flag-checkered"></i> Close PO with Balance</button>' : ""}
+        ${serviceDone ? '<button class="btn gold" id="serviceDone"><i class="fa-solid fa-circle-check"></i> Mark service completed &amp; close</button>' : ""}
+        ${reopenable ? '<button class="btn" id="reopenPo"><i class="fa-solid fa-rotate-left"></i> Reopen</button>' : ""}
         <button class="btn primary" id="pdfPo"><i class="fa-solid fa-file-pdf"></i> View / Download PDF</button>`
     });
     const $ = (s) => modal.el.querySelector(s);
+    const who = () => ({ uid: state.user.uid, name: state.profile.name || state.user.email });
     $("#pdfPo").addEventListener("click", () => showDocument(poSpec(po), `${safeFileName(po.poNo)}.pdf`));
     $("#editPo")?.addEventListener("click", () => { modal.close(); openEditor(po); });
     $("#dupPo")?.addEventListener("click", () => { modal.close(); openEditor(po, { duplicate: true }); });
-    const closeWith = async (status, button) => {
-      if (status === "CLOSED" && inProcess.length) {
-        toast(`${inProcess.length} inward entr${inProcess.length === 1 ? "y is" : "ies are"} still pending Kanta/GRN for this PO. Complete or delete them first.`, "error");
-        return;
-      }
-      const pending = po.lines.map((l) => `${l.name}: ${qty(Math.max(0, l.qty - (l.receivedQty || 0)))} ${l.unit}`).join(", ");
-      const reason = await confirmDialog(status === "CANCELLED"
-        ? `Cancel ${po.poNo}? The vendor should be informed separately.`
-        : `Mark ${po.poNo} as complete even though it is not fully received? Pending quantity (${pending}) will be dropped and no more inward will be accepted against this PO.`,
-      { title: status === "CANCELLED" ? "Cancel purchase order" : "Close purchase order", okText: status === "CANCELLED" ? "Cancel PO" : "Close PO", danger: status === "CANCELLED", input: { label: "Reason", required: true, placeholder: "e.g. Vendor cannot supply balance / requirement changed" } });
+    $("#cancelPo")?.addEventListener("click", async (e) => {
+      const button = e.currentTarget;
+      const reason = await confirmDialog(`Cancel ${po.poNo}? The vendor should be informed separately.`, { title: "Cancel purchase order", okText: "Cancel PO", danger: true, input: { label: "Reason", required: true } });
+      if (!reason) return;
+      const done = busy(button);
+      try {
+        await runTransaction(db, async (tx) => {
+          const ref = doc(db, "purchaseOrders", po.id);
+          const cur = (await tx.get(ref)).data();
+          if (cur.status !== "OPEN" || cur.lines.some((l) => n(l.invoicedQty) > 0)) throw new Error("Only an untouched open PO can be cancelled. Close it with balance instead.");
+          tx.update(ref, { status: "CANCELLED", closeReason: reason, closedAt: serverTimestamp(), closedBy: who(), updatedAt: serverTimestamp() });
+          logActivity(tx, { module: "Purchase Orders", action: "CANCEL", refId: po.id, refNo: po.poNo, summary: `Cancelled PO ${po.poNo}. Reason: ${reason}` });
+        });
+        toast(`${po.poNo} cancelled.`, "ok");
+        modal.close();
+        await load();
+      } catch (error) { reportError(error); } finally { done(); }
+    });
+    // Passive close: the remaining quantity will not be supplied; it is kept as a closed balance, not as pending.
+    $("#closePo")?.addEventListener("click", async (e) => {
+      const button = e.currentTarget;
+      if (inProcess.length) { toast(`${inProcess.length} inward entr${inProcess.length === 1 ? "y is" : "ies are"} still pending GRN / Kanta for this PO. Complete or delete them first.`, "error"); return; }
+      const balance = po.lines.map((l, i) => `${l.name}: ${qty(qs[i].pending)} ${l.unit}`).join(", ");
+      const reason = await confirmDialog(`Close ${po.poNo} with balance? Remaining quantity (${balance}) will be marked as closed without receipt — kept in history, removed from pending — and no more inward will be accepted unless the PO is reopened.`,
+        { title: "Close PO with Balance", okText: "Close PO", input: { label: "Reason", required: true, placeholder: "e.g. Vendor cannot supply the balance / requirement changed" } });
       if (!reason) return;
       const done = busy(button);
       try {
@@ -307,28 +362,67 @@ async function start() {
           const ref = doc(db, "purchaseOrders", po.id);
           const cur = (await tx.get(ref)).data();
           if (!OPEN_PO_STATUSES.includes(cur.status)) throw new Error(`PO is already ${cur.status}.`);
-          tx.update(ref, { status, closeReason: reason, closedAt: serverTimestamp(), closedBy: { uid: state.user.uid, name: state.profile.name || state.user.email }, updatedAt: serverTimestamp() });
-          logActivity(tx, { module: "Purchase Orders", action: status === "CANCELLED" ? "CANCEL" : "CLOSE", refId: po.id, refNo: po.poNo, summary: `${status === "CANCELLED" ? "Cancelled" : "Closed"} PO ${po.poNo}. Pending dropped: ${pending}. Reason: ${reason}` });
+          if (cur.lines.some((l) => n(l.pendingKantaQty) > 0.0005 || n(l.invoicedQty) - n(l.grnQty) > 0.0005)) throw new Error("Material is still in process (GRN / Kanta pending) on this PO.");
+          const lines = cur.lines.map((l) => ({ ...l, closedBalanceQty: Math.max(0, round(n(l.qty) - n(l.receivedQty))) }));
+          const closure = { type: "CLOSE", reason, at: new Date().toISOString(), by: who(), balances: lines.map((l) => ({ lineId: l.lineId, name: l.name, unit: l.unit, qty: l.closedBalanceQty })) };
+          tx.update(ref, { status: "CLOSED WITH BALANCE", lines, closeReason: reason, closedAt: serverTimestamp(), closedBy: who(), closeHistory: arrayUnion(closure), updatedAt: serverTimestamp() });
+          logActivity(tx, { module: "Purchase Orders", action: "CLOSED WITH BALANCE", refId: po.id, refNo: po.poNo, summary: `Closed PO ${po.poNo} with balance: ${lines.map((l) => `${l.name} ${qty(l.closedBalanceQty)} ${l.unit} not received`).join(", ")}. Reason: ${reason}` });
         });
-        toast(`${po.poNo} ${status === "CANCELLED" ? "cancelled" : "marked complete"}.`, "ok");
+        toast(`${po.poNo} closed with balance.`, "ok");
         modal.close();
         await load();
       } catch (error) { reportError(error); } finally { done(); }
-    };
-    $("#cancelPo")?.addEventListener("click", (e) => closeWith("CANCELLED", e.currentTarget));
-    $("#closePo")?.addEventListener("click", (e) => closeWith("CLOSED", e.currentTarget));
+    });
+    $("#serviceDone")?.addEventListener("click", () => {
+      const m = openModal({
+        title: `Service completed · ${po.poNo}`,
+        body: `<form id="sForm" class="form-grid" style="grid-template-columns:1fr 1fr" novalidate>
+          <label class="field"><span>Supplier bill / service confirmation no. <b class="req">*</b></span><input name="billNo" /></label>
+          <label class="field"><span>Bill date</span><input type="date" name="billDate" value="${isoDate()}" /></label>
+          <label class="field"><span>Bill amount (₹, optional)</span><input type="number" min="0" step="any" name="billAmount" /></label>
+          <label class="field"><span>PO value</span><input readonly value="₹${money(po.totals?.total)}" /></label>
+          <label class="field span-2"><span>Confirmation note</span><input name="note" placeholder="e.g. 12 trips done, confirmed by stores" /></label>
+          <p class="small muted span-2" style="margin:0">The PO is closed as SERVICE COMPLETED. Book the bill in Tally as usual.</p></form>`,
+        footer: '<button class="btn" data-close>Cancel</button><button class="btn primary" id="saveSvc">Mark completed &amp; close</button>'
+      });
+      m.el.querySelector("#saveSvc").addEventListener("click", async (ev) => {
+        const button = ev.currentTarget;
+        const v = formValues(m.el.querySelector("#sForm"));
+        if (!v.billNo) { toast("Enter the bill / confirmation number.", "error"); return; }
+        if (v.billAmount !== "" && !(Number(v.billAmount) >= 0)) { toast("Bill amount must be 0 or more.", "error"); return; }
+        const done = busy(button);
+        try {
+          await runTransaction(db, async (tx) => {
+            const ref = doc(db, "purchaseOrders", po.id);
+            const cur = (await tx.get(ref)).data();
+            if (!OPEN_PO_STATUSES.includes(cur.status)) throw new Error(`PO is already ${cur.status}.`);
+            const completion = { billNo: v.billNo, billDate: v.billDate, billAmount: v.billAmount === "" ? null : round(Number(v.billAmount), 2), note: v.note, at: serverTimestamp(), by: who() };
+            tx.update(ref, { status: "SERVICE COMPLETED", serviceCompletion: completion, closedAt: serverTimestamp(), closedBy: who(), updatedAt: serverTimestamp() });
+            logActivity(tx, { module: "Purchase Orders", action: "SERVICE COMPLETED", refId: po.id, refNo: po.poNo, summary: `Service PO ${po.poNo} completed and closed · bill ${v.billNo} (${fmtDate(v.billDate)})${completion.billAmount !== null ? ` ₹${money(completion.billAmount)}` : ""}${v.note ? ` · ${v.note}` : ""}` });
+          });
+          toast(`${po.poNo} marked service completed.`, "ok");
+          m.close(); modal.close();
+          await load();
+        } catch (error) { reportError(error); } finally { done(); }
+      });
+    });
     $("#reopenPo")?.addEventListener("click", async (e) => {
       const button = e.currentTarget;
-      if (!(await confirmDialog(`Reopen ${po.poNo}?`))) return;
+      const reason = await confirmDialog(`Reopen ${po.poNo}? ${service ? "The service will be open again." : "The closed balance becomes pending again (stock does not change) and inward is allowed again."}`, { title: "Reopen PO", okText: "Reopen", input: { label: "Reason", required: true } });
+      if (!reason) return;
       const done = busy(button);
       try {
         await runTransaction(db, async (tx) => {
           const ref = doc(db, "purchaseOrders", po.id);
           const cur = (await tx.get(ref)).data();
-          const status = deriveOrderStatus({ ...cur, status: "OPEN" }, "receivedQty", state.company.poTolerancePct);
-          tx.update(ref, { status, closeReason: "", updatedAt: serverTimestamp() });
-          logActivity(tx, { module: "Purchase Orders", action: "REOPEN", refId: po.id, refNo: po.poNo, summary: `Reopened PO ${po.poNo}` });
+          if (![...CLOSED_PO_STATUSES, "SERVICE COMPLETED"].includes(cur.status)) throw new Error(`PO is ${cur.status}.`);
+          const lines = cur.lines.map((l) => ({ ...l, closedBalanceQty: 0 }));
+          const status = isServicePo(cur) ? "OPEN" : deriveOrderStatus({ ...cur, lines, status: "OPEN" }, "receivedQty", state.company.poTolerancePct);
+          const restored = cur.lines.map((l) => `${l.name} ${qty(Math.max(0, round(n(l.qty) - n(l.receivedQty))))} ${l.unit}`).join(", ");
+          tx.update(ref, { status, lines, closeReason: "", reopenedAt: serverTimestamp(), reopenedBy: who(), closeHistory: arrayUnion({ type: "REOPEN", reason, at: new Date().toISOString(), by: who(), from: cur.status }), updatedAt: serverTimestamp() });
+          logActivity(tx, { module: "Purchase Orders", action: "REOPEN", refId: po.id, refNo: po.poNo, summary: `Reopened PO ${po.poNo} (was ${cur.status})${isServicePo(cur) ? "" : `; pending again: ${restored}`}. Reason: ${reason}` });
         });
+        toast(`${po.poNo} reopened.`, "ok");
         modal.close();
         await load();
       } catch (error) { reportError(error); } finally { done(); }

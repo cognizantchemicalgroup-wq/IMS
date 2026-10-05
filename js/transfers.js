@@ -74,7 +74,7 @@ async function start() {
     const form = modal.el.querySelector("#tForm");
     const renderL = () => {
       const from = form.from.value;
-      const stocked = items.filter((i) => i.active !== false && (!from || available(from, i.id) > 0));
+      const stocked = items.filter((i) => i.active !== false && i.category !== "Service" && (!from || available(from, i.id) > 0));
       modal.el.querySelector("#tl").innerHTML = lines.map((l, i) => {
         const it = items.find((x) => x.id === l.itemId);
         return `<tr data-i="${i}"><td><select data-f="itemId"><option value="">${from ? "Select item in stock…" : "Select source first"}</option>${stocked.map((x) => `<option value="${esc(x.id)}" ${x.id === l.itemId ? "selected" : ""}>${esc(x.name)} (${esc(x.category)})</option>`).join("")}</select></td>

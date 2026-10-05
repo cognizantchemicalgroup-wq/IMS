@@ -104,7 +104,7 @@ async function start() {
       body: `<div class="notice info" style="margin-bottom:14px"><i class="fa-solid fa-circle-info"></i><div>Use this only for stock that did <b>not</b> come through a PO / GRN — e.g. stock already lying in the warehouse when the ERP started. It is recorded separately and appears under Exceptions → Stock manually adjusted. To correct it later, an admin reverses it from Write-off / Adjust (history is kept).</div></div>
         <form id="osForm" class="form-grid" novalidate>
           <label class="field"><span>Warehouse <b class="req">*</b></span><select name="warehouse">${warehouseOptions()}</select></label>
-          <label class="field span-2"><span>Item <b class="req">*</b></span><select name="itemId"><option value="">Select…</option>${items.filter((i) => i.active !== false).map((i) => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.unit)})</option>`).join("")}</select></label>
+          <label class="field span-2"><span>Item <b class="req">*</b></span><select name="itemId"><option value="">Select…</option>${items.filter((i) => i.active !== false && i.category !== "Service").map((i) => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.unit)})</option>`).join("")}</select></label>
           <label class="field"><span>Quantity <b class="req">*</b></span><input type="number" step="any" min="0" name="qty" /></label>
           <label class="field"><span>Stock as on date</span><input type="date" name="date" value="${isoDate()}" /></label>
           <label class="field span-3"><span>Reason / source <b class="req">*</b></span><input name="reason" placeholder="e.g. Opening stock physically counted on 01-10-2026" /></label>
