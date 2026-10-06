@@ -28,6 +28,7 @@ are instructions for the accounts team when they make the Tally entries; nothing
 | Write-off / adjustment (damaged, destroyed, count correction; admin can delete/reverse) | `adjustments.html` | `js/adjustments.js` |
 | Activity log (who did what, to the second; cannot be edited) | `activity.html` | `js/activity.js` |
 | Settings: company legal details, bank details, number formats (PH series, Monthly series, PI…), users & roles | `settings.html` | `js/settings.js` |
+| **Backup, Fresh Start & Restore** — full backup (download + cloud copy), delete trial data, restore from a backup file; needs the separate reset password (**only rupesh.mudliar@cognizantchemical.com**) | `data-admin.html` | `js/data-admin.js` |
 | Access Audit — logins, last active, logout, who did GRN / Kanta and GRN→Kanta time (**only rupesh.mudliar@cognizantchemical.com**) | `access.html` | `js/access.js` |
 
 Shared code: `js/core.js` (login guard, layout, GST maths, numbering, **stock engine**, activity log),
@@ -101,8 +102,10 @@ at each stage, coloured tiles (accepted, in process, rejected, pending, closed b
 (green = in stock, purple = in QC quarantine, brown = awaiting Kanta, blue = invoiced awaiting GRN, hatched = closed balance,
 grey = still to come). The PO list shows the same bar for single-item POs.
 
-### QC quarantine (material is not stock until QC releases it)
-At GRN the QC status defaults to **Pending QC — hold in quarantine**. After Kanta the material is weighed but goes to
+### QC quarantine (optional)
+QC quarantine is **optional**. *Settings → QC quarantine after Kanta*: **Off** (default) — a GRN defaults to *Approved* and Kanta adds
+stock directly; **On** — every GRN defaults to *Pending QC*. Either way the QC status can be changed on each GRN.
+When a GRN is saved as **Pending QC — hold in quarantine**, after Kanta the material is weighed but goes to
 **Awaiting QC (quarantine)**: it is **not** added to stock and not payable; the PO shows *Awaiting QC* and Stock → *Under QC (not in stock)*
 lists it. A **manager or admin** then opens Inward → Awaiting QC → **QC release**:
 - **Release to stock** — the released quantity goes into RM stock; any *QC rejected* quantity (with a reason and report reference)
@@ -110,8 +113,25 @@ lists it. A **manager or admin** then opens Inward → Awaiting QC → **QC rele
 - **QC failed — reject all** — the whole receipt is rejected; nothing ever enters inventory or the stock ledger, and the PO
   quantity stays pending. Example: one PO, first invoice released, second invoice rejected → only the first is in stock.
 
-If QC was already done before the vehicle reached the gate, choose **Approved (QC already passed)** at GRN — Kanta then adds stock directly.
-The rules enforce that an operator cannot release quarantined material.
+If QC was already done (or is not needed), choose **Approved** at GRN — Kanta then adds stock directly.
+The rules enforce that only a manager / admin can take material out of quarantine (release or reject it). GRNs saved by older
+versions with "Pending QC" are not quarantined (they keep the behaviour they were entered with).
+
+### Backup, fresh start & restore (super admin only)
+**Admin → Backup & Reset** is visible only to rupesh.mudliar@cognizantchemical.com.
+1. **First time:** set the *reset password* on that page (separate from the login password). It is stored only as a one-way hash —
+   nobody can read it, it is not in the code, and the database rules check it. Change it later with *Change reset password*.
+2. **Backup now** — downloads every record (transactions, stock, ledger, activity, numbering, masters, settings, warehouses; users for
+   reference) as one JSON file with a checksum, and keeps a copy in the cloud (listed on the page). Changes nothing.
+3. **Fresh start** — type RESET + the reset password. A full backup is taken first (downloaded + cloud), then all transactions, stock,
+   ledger and activity log are deleted; optionally masters too; document numbers restart at the number last set in Settings (editable
+   per counter). Settings, warehouses, users and the access audit are kept. The result is checked and one "DATA RESET" entry is logged.
+4. **Restore** — choose a backup file: it is checked (an edited or damaged file is refused) and a preview shows the counts. Type RESTORE +
+   the reset password. The current data is backed up first, then the data is put back exactly as in the file (same numbers, dates,
+   stock and history) and verified collection by collection. If anything stops half-way, simply run the same restore again.
+Other admins cannot do any of this — the database rules refuse bulk delete/restore without the reset password, even from the
+browser console. Five wrong passwords lock the page for 15 minutes, and wrong attempts are logged. Uploaded documents (invoice / Kanta
+slip files) are not deleted by a fresh start, so restored records still open their attachments.
 
 ### RM and Ready stock (BMR optional)
 Every item can be held as **RM** (raw / as purchased — all inward lands here) and **Ready** (processed) in each warehouse — even the
@@ -139,7 +159,7 @@ PDFs carry "System Generated Document — No Signature Required." instead of a s
 1. Upload the new files to the hosting (Hostinger `public_html`, keeping `vendor/`; or the GitHub repo if the site is deployed from it).
    **Never upload `.env`, `service-account.json` or `admin/users.json` into `public_html`** — keep them one folder above it
    (the PHP login looks there first).
-2. **Publish the new security rules** — new features (QC quarantine / "Awaiting QC", RM → Ready processing, proforma invoices,
+2. **Publish the new security rules** — new features (Backup / Fresh start / Restore, QC quarantine / "Awaiting QC", RM → Ready processing, proforma invoices,
    rejected vehicles / payment hold, warehouses by managers) are refused by the old rules until this is done:
    ```bash
    npm install

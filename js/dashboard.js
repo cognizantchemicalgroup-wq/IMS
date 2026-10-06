@@ -20,6 +20,7 @@ async function start() {
   const openPos = pos.filter((p) => OPEN_PO_STATUSES.includes(p.status));
   const grnPending = receipts.filter((r) => r.stage === "GRN PENDING");
   const kantaPending = receipts.filter((r) => r.stage === "KANTA PENDING");
+  const qcPending = receipts.filter((r) => r.stage === "QC PENDING");
   const openSos = sos.filter((s) => ["OPEN", "PARTIALLY DISPATCHED"].includes(s.status));
   const inTransit = transfers.filter((t) => t.status === "IN TRANSIT");
   const openGoods = openPos.filter((p) => !isServicePo(p));
@@ -34,7 +35,7 @@ async function start() {
   page.innerHTML = `${header}
     <div class="grid cols-4">
       ${kpi("fa-file-invoice", "Open purchase orders", openPos.length, `₹${money(pendingPoValue)} still to be inwarded`, "/purchase-orders")}
-      ${kpi("fa-scale-balanced", "Awaiting GRN / Kanta", `${grnPending.length} / ${kantaPending.length}`, "stock is added only after Kanta", "/inward")}
+      ${qcPending.length ? kpi("fa-scale-balanced", "Awaiting GRN / Kanta / QC", `${grnPending.length} / ${kantaPending.length} / ${qcPending.length}`, "QC material is not in stock until released", "/inward") : kpi("fa-scale-balanced", "Awaiting GRN / Kanta", `${grnPending.length} / ${kantaPending.length}`, "stock is added only after Kanta", "/inward")}
       ${kpi("fa-file-contract", "Open sales orders", openSos.length, "awaiting dispatch", "/sales-orders")}
       ${kpi("fa-triangle-exclamation", "Exceptions", exceptionTotal, exceptionTotal ? "need attention" : "all clear", "/exceptions")}
     </div>

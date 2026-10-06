@@ -47,7 +47,9 @@ export const DEFAULT_COMPANY = {
     "Subject to Raigad jurisdiction."
   ].join("\n"),
   poTolerancePct: 0.5,
-  poOverdueDays: 15
+  poOverdueDays: 15,
+  // Optional QC quarantine: when on, GRN defaults to "Pending QC" and material stays out of stock until QC release.
+  qcQuarantine: false
 };
 
 export const DEFAULT_WAREHOUSES = [
@@ -585,6 +587,7 @@ const NAV = [
   { group: "Admin", items: [
     ["activity", "/activity", "fa-clock-rotate-left", "Activity Log"],
     ["access", "/access", "fa-user-shield", "Access Audit", "superadmin"],
+    ["data", "/data-admin", "fa-database", "Backup & Reset", "superadmin"],
     ["settings", "/settings", "fa-gear", "Settings & Users"]
   ] }
 ];

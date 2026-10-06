@@ -188,7 +188,7 @@ async function grnStep(receipt, qtys = {}, { qcPending = false } = {}) {
   await page.click('[data-tab="GRN PENDING"]');
   await page.locator(`[data-grn="${receipt.id}"]`).click();
   const m = modal();
-  if (!qcPending) await selectContaining(m.locator("select[name=qc]"), "Approved (QC");
+  await selectContaining(m.locator("select[name=qc]"), qcPending ? "Pending QC" : "Approved (QC");
   for (const [name, q] of Object.entries(qtys)) await m.locator("tr", { hasText: name }).locator("input").fill(String(q));
   await m.locator("#saveG").click();
   await expectToast();
@@ -778,6 +778,24 @@ try {
   const qPo = await createPo("Kalyan Polymers", "PG-153", [{ item: "Acetone", qty: 600, rate: 70 }]);
   const acRm0 = await stockOf("PG-153", "Acetone");
   const q1 = await receiptEntry({ poNo: qPo.poNo, invoiceNo: "KP-81", qtys: { Acetone: 300 } });
+  const grnDefault = async () => {
+    await goto("inward.html"); await page.click('[data-tab="GRN PENDING"]');
+    await page.locator(`[data-grn="${q1.id}"]`).click();
+    const text = await modal().locator("select[name=qc] option:checked").textContent();
+    await closeAllModals();
+    return text;
+  };
+  const setQcSetting = async (on) => {
+    await goto("settings.html");
+    await page.locator("#coForm select[name=qcQuarantine]").selectOption(on ? "true" : "false");
+    await page.locator("#coForm button[type=submit]").click();
+    await expectToast();
+  };
+  check((await grnDefault()).startsWith("Approved"), "QC quarantine is optional: by default a GRN is 'Approved' (Kanta adds stock directly)");
+  await setQcSetting(true);
+  check((await grnDefault()).startsWith("Pending QC") && (await one("settings", "qcQuarantine", true)) !== null, "Settings → QC quarantine ON: GRN defaults to 'Pending QC'");
+  await setQcSetting(false);
+  check((await grnDefault()).startsWith("Approved"), "Settings → QC quarantine OFF again: GRN defaults to 'Approved'");
   await grnStep(q1, {}, { qcPending: true });
   await kantaStep(q1);
   let q1d = await adb.collection("receipts").doc(q1.id).get().then((d) => d.data());
@@ -1225,6 +1243,127 @@ try {
     try { await fs.getDocs(fs.collection(db, "purchaseOrders")); return "allowed"; } catch (e) { return e.code; }
   });
   check(outsiderRead === "permission-denied", "outsider cannot read any data even with a valid Firebase login");
+
+  /* ================= 13. Backup / fresh start / restore (super admin + reset password) ================= */
+  console.log("\n13. Backup, fresh start and restore");
+  const RESET_PW = "13579246";
+  const WIPE = ["purchaseOrders", "receipts", "outwards", "transfers", "adjustments", "conversions", "quotations", "salesOrders", "proformaInvoices", "inventory", "stockLedger", "activity", "counters", "docNumbers", "parties", "items"];
+  const countC = async (c) => (await adb.collection(c).count().get()).data().count;
+  const plain = (v) => (v && typeof v.toMillis === "function" ? { ts: v.toMillis() } : Array.isArray(v) ? v.map(plain) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, plain(v[k])])) : v);
+  const dumpColl = async (c) => JSON.stringify((await adb.collection(c).get()).docs.map((d) => [d.id, plain(d.data())]).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+  await login("admin@test.ccpl", "Admin#12345");
+  await waitForPath(page, "/dashboard");
+  check(await page.locator('.nav-link[href="/data-admin"]').count() === 0, "Backup & Reset is hidden from other admins");
+  const adminTry = await page.evaluate(async () => {
+    const { db } = await import("./js/firebase-config.js");
+    const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const out = {};
+    try { await fs.setDoc(fs.doc(db, "secure/resetLock"), { hash: "0".repeat(64), at: fs.serverTimestamp(), by: "x" }); out.lock = "allowed"; } catch (e) { out.lock = e.code; }
+    try { const s = await fs.getDocs(fs.query(fs.collection(db, "stockLedger"), fs.limit(1))); await fs.deleteDoc(s.docs[0].ref); out.del = "allowed"; } catch (e) { out.del = e.code; }
+    return out;
+  });
+  check(adminTry.lock === "permission-denied" && adminTry.del === "permission-denied", `another admin cannot set the reset password or bulk-delete: ${JSON.stringify(adminTry)}`);
+  await logout();
+  await login("rupesh.mudliar@cognizantchemical.com", "Rupesh#12345");
+  await waitForPath(page, "/dashboard");
+  await goto("data-admin.html");
+  await page.fill("#setPwForm input[name=pw]", RESET_PW);
+  await page.fill("#setPwForm input[name=pw2]", "13579999");
+  await page.click("#setPwForm button[type=submit]");
+  check((await expectToast("error")).includes("do not match"), "reset password must be typed twice the same");
+  await page.fill("#setPwForm input[name=pw2]", RESET_PW);
+  await page.click("#setPwForm button[type=submit]");
+  await expectToast();
+  const lockDoc = (await adb.doc("secure/resetLock").get()).data();
+  check(lockDoc && lockDoc.hash.length === 64 && !JSON.stringify(lockDoc).includes(RESET_PW) && !JSON.stringify((await adb.doc("secure/resetInfo").get()).data()).includes(RESET_PW), "reset password stored only as a one-way hash");
+  const superRead = await page.evaluate(async () => {
+    const { db } = await import("./js/firebase-config.js");
+    const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    try { await fs.getDoc(fs.doc(db, "secure/resetLock")); return "allowed"; } catch (e) { return e.code; }
+  });
+  check(superRead === "permission-denied", "nobody can read the stored hash, not even the super admin");
+
+  // Manual backup
+  const [bDl] = await Promise.all([page.waitForEvent("download"), page.click("#backupBtn")]);
+  const manualFile = path.join(OUT, bDl.suggestedFilename());
+  await bDl.saveAs(manualFile);
+  await page.locator("#runTitle", { hasText: "Backup complete" }).waitFor({ timeout: 60000 });
+  const manual = JSON.parse(await readFile(manualFile, "utf8"));
+  check(manual.format === "CCPL-ERP-BACKUP" && manual.checksum.length === 64 && manual.counts.purchaseOrders === await countC("purchaseOrders") && manual.counts.stockLedger === await countC("stockLedger"), `backup file ${bDl.suggestedFilename()} holds every record (${manual.counts.purchaseOrders} POs, ${manual.counts.stockLedger} ledger rows)`);
+  await page.waitForFunction(() => document.querySelector("#cloudRows")?.textContent.includes("CCPL-backup"), null, { timeout: 15000 });
+  check(true, "backup copy saved in the cloud and listed");
+
+  // Wrong password → nothing deleted
+  const poCount = await countC("purchaseOrders");
+  await page.click("#resetBtn");
+  m = modal();
+  await m.locator("input[name=confirmWord]").fill("RESET");
+  await m.locator("input[name=pw]").fill("00000000");
+  await m.locator("#rsGo").click();
+  await page.locator(".toast.error", { hasText: "Wrong reset password" }).waitFor({ timeout: 20000 });
+  await page.locator("#runTitle", { hasText: "Stopped" }).waitFor();
+  check(await countC("purchaseOrders") === poCount, "wrong reset password → stopped, nothing deleted");
+  const wrongLogged = (await adb.collection("activity").where("action", "==", "WRONG RESET PASSWORD").get()).size;
+  check(wrongLogged === 1, "wrong reset password attempt is recorded in the activity log");
+
+  // Fresh start (masters kept, numbering restarted)
+  const before = {};
+  for (const c of WIPE) before[c] = await dumpColl(c);
+  const partiesBefore = await countC("parties"); const itemsBefore = await countC("items"); const usersBefore = await countC("users"); const whBefore = await countC("warehouses");
+  await page.click("#resetBtn");
+  m = modal();
+  await m.locator("input[name=confirmWord]").fill("RESET");
+  await m.locator("input[name=pw]").fill(RESET_PW);
+  await page.screenshot({ path: path.join(OUT, "22-fresh-start.png") });
+  const [rDl] = await Promise.all([page.waitForEvent("download"), m.locator("#rsGo").click()]);
+  const resetBackupFile = path.join(OUT, rDl.suggestedFilename());
+  await rDl.saveAs(resetBackupFile);
+  await page.locator("#runTitle", { hasText: "Fresh start complete" }).waitFor({ timeout: 120000 });
+  await page.screenshot({ path: path.join(OUT, "23-fresh-start-done.png"), fullPage: true });
+  const txLeft = {};
+  for (const c of ["purchaseOrders", "receipts", "outwards", "transfers", "adjustments", "conversions", "quotations", "salesOrders", "proformaInvoices", "inventory", "stockLedger", "docNumbers"]) txLeft[c] = await countC(c);
+  check(Object.values(txLeft).every((n) => n === 0), `fresh start: every transaction, stock balance and issued number deleted ${JSON.stringify(txLeft)}`);
+  const act = (await adb.collection("activity").get()).docs.map((d) => d.data());
+  check(act.length === 1 && act[0].action === "DATA RESET" && act[0].summary.includes(rDl.suggestedFilename()), "activity log restarts with one 'DATA RESET' entry naming the backup");
+  check(await countC("parties") === partiesBefore && await countC("items") === itemsBefore && await countC("warehouses") === whBefore && await countC("users") === usersBefore, "masters, warehouses and users kept");
+  check(!(await adb.doc("secure/resetGrant").get()).exists, "reset permission closed again after the operation");
+  const resetBackup = JSON.parse(await readFile(resetBackupFile, "utf8"));
+  check(WIPE.every((c) => JSON.stringify(resetBackup.collections[c].map((d) => d.id).sort()) === JSON.stringify(JSON.parse(before[c]).map((x) => x[0]).sort())), "automatic backup before the reset contains every record that was deleted");
+  const afterReset = await createPo("Gujarat Acids", "PG-106", [{ item: "Hydrochloric", qty: 10, rate: 12 }]);
+  check(afterReset.poNo === "CCPL/PH/056/26-27", `numbering restarts at the number last set in Settings: ${afterReset.poNo}`);
+  const afterResetId = (await one("purchaseOrders", "poNo", afterReset.poNo)).id;
+
+  // Tampered file is refused
+  const tampered = JSON.parse(await readFile(resetBackupFile, "utf8"));
+  tampered.collections.purchaseOrders[0].data.status = "OPEN-EDITED";
+  const tamperedFile = path.join(OUT, "tampered-backup.json");
+  await writeFile(tamperedFile, JSON.stringify(tampered));
+  await goto("data-admin.html");
+  await page.click("#restoreBtn");
+  m = modal();
+  await m.locator("input[name=file]").setInputFiles(tamperedFile);
+  await m.locator("#rtPreview .notice").waitFor();
+  check((await m.locator("#rtPreview").textContent()).includes("damaged or was edited") && await m.locator("#rtGo").isDisabled(), "an edited / damaged backup file is refused");
+
+  // Restore the backup taken before the reset
+  await m.locator("input[name=file]").setInputFiles(resetBackupFile);
+  await m.locator("#rtPreview .notice.ok").waitFor();
+  await m.locator("input[name=confirmWord]").fill("RESTORE");
+  await m.locator("input[name=pw]").fill(RESET_PW);
+  await page.screenshot({ path: path.join(OUT, "24-restore-preview.png") });
+  const [sDl] = await Promise.all([page.waitForEvent("download"), m.locator("#rtGo").click()]);
+  await sDl.saveAs(path.join(OUT, sDl.suggestedFilename()));
+  await page.locator("#runTitle", { hasText: "Restore complete" }).waitFor({ timeout: 180000 });
+  const diff = [];
+  for (const c of WIPE.filter((x) => x !== "activity")) if (await dumpColl(c) !== before[c]) diff.push(c);
+  check(diff.length === 0, `restore puts back every record exactly as it was (same IDs, values and timestamps)${diff.length ? `: differs ${diff.join(", ")}` : ""}`);
+  const actAfter = (await adb.collection("activity").get()).docs.map((d) => d.data());
+  check(actAfter.length === JSON.parse(before.activity).length + 1 && actAfter.some((a) => a.action === "DATA RESTORE"), "activity log restored, plus one 'DATA RESTORE' entry");
+  check(!(await adb.collection("purchaseOrders").doc(afterResetId).get()).exists, "data entered after the reset is replaced by the backup (it is kept in the 'before-restore' backup)");
+  check((await stockOf("PG-153", "Acetone", "READY")) === 60, "stock balances are back (Acetone Ready 60 kg)");
+  check(!(await adb.doc("secure/resetGrant").get()).exists, "reset permission closed after restore");
+  await page.screenshot({ path: path.join(OUT, "25-restore-done.png"), fullPage: true });
+  await logout();
 
   check(consoleErrors.length === 0, `no unexpected browser errors${consoleErrors.length ? `: ${consoleErrors.slice(0, 3).join(" | ")}` : ""}`);
 } catch (error) {

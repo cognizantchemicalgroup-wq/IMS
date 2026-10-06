@@ -14,6 +14,15 @@ service firebase.storage {
       allow create: if activeUser() && validDocument();
       allow update, delete: if false;
     }
+    // Data backups (JSON) — written and read only by the super admin; never changed or deleted from the app.
+    function superAdmin() {
+      return activeUser() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com';
+    }
+    match /backups/{fileName} {
+      allow read: if superAdmin();
+      allow create: if superAdmin() && request.resource.size <= 200 * 1024 * 1024 && request.resource.contentType == 'application/json';
+      allow update, delete: if false;
+    }
     match /{allPaths=**} {
       allow read, write: if false;
     }

@@ -110,8 +110,8 @@ service cloud.firestore {
       allow update: if isOperator()
         && (request.resource.data.stage != 'CANCELLED' || isAdmin())
         && (resource.data.stage != 'REJECTED' || request.resource.data.stage == 'REJECTED')
-        // only a manager / admin can release quarantined (QC pending) material into stock
-        && (resource.data.stage != 'QC PENDING' || request.resource.data.stage != 'COMPLETED' || isManager())
+        // only a manager / admin can take material out of QC quarantine (release to stock or reject it)
+        && (resource.data.stage != 'QC PENDING' || request.resource.data.stage == 'QC PENDING' || isManager())
         && (request.resource.data.get('paymentHold', null) == resource.data.get('paymentHold', null)
             || resource.data.get('paymentHold', null) == null
             || isManager());
@@ -159,6 +159,55 @@ service cloud.firestore {
       allow read: if active();
       allow create: if active() && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
       allow update, delete: if false;
+    }
+
+    /* ---------------- Super-admin backup / reset / restore ----------------
+     * A reset or restore needs (1) the super-admin login AND (2) the separate reset password.
+     * The password is never stored: /secure/resetLock holds sha256(proof) where proof = sha256(salt + ":" + password).
+     * Entering the right password writes /secure/resetGrant (checked here against the lock), which unlocks
+     * bulk delete / restore for 30 minutes for that user only. Nobody can read the lock or the grant. */
+    function lockPath() { return /databases/$(database)/documents/secure/resetLock; }
+    function grantPath() { return /databases/$(database)/documents/secure/resetGrant; }
+    function resetAllowed() {
+      return isSuperAdmin()
+        && get(grantPath()).data.uid == request.auth.uid
+        && request.time < get(grantPath()).data.at + duration.value(30, 'm');
+    }
+    function resettable() { return ['purchaseOrders', 'receipts', 'outwards', 'transfers', 'adjustments', 'conversions',
+      'quotations', 'salesOrders', 'proformaInvoices', 'inventory', 'stockLedger', 'activity',
+      'counters', 'docNumbers', 'parties', 'items']; }
+    function restorable() { return resettable().concat(['settings', 'warehouses']); }
+    function validLock() {
+      return request.resource.data.keys().hasOnly(['hash', 'at', 'by'])
+        && request.resource.data.hash is string && request.resource.data.hash.size() == 64
+        && request.resource.data.at == request.time;
+    }
+    match /secure/resetLock {
+      allow read: if false;
+      allow create: if isSuperAdmin() && validLock();
+      allow update: if resetAllowed() && validLock();
+      allow delete: if false;
+    }
+    // Public part of the lock (whether a password is set, and its salt) — the super admin only.
+    match /secure/resetInfo {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin() && existsAfter(lockPath()) && request.resource.data.salt is string && request.resource.data.salt.size() >= 16;
+      allow update: if resetAllowed() && request.resource.data.salt is string && request.resource.data.salt.size() >= 16;
+      allow delete: if false;
+    }
+    match /secure/resetGrant {
+      allow read: if false;
+      allow create, update: if isSuperAdmin()
+        && request.resource.data.keys().hasOnly(['uid', 'at', 'proof', 'purpose'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.proof is string
+        && hashing.sha256(request.resource.data.proof).toHexString().lower() == get(lockPath()).data.hash;
+      allow delete: if isSuperAdmin();
+    }
+    match /{coll}/{docId} {
+      allow delete: if coll in resettable() && resetAllowed();
+      allow create, update: if coll in restorable() && resetAllowed();
     }
 
     // Everything else (including the old inward/kanta/grn/stock collections) is locked.
