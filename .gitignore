@@ -10,5 +10,6 @@ tests/output/
 .env.*
 !.env.example
 composer.phar
-api/data/
+api/data/*
+!api/data/.htaccess
 vendor/
