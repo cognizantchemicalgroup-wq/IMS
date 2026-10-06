@@ -4,7 +4,7 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can,
   listCollection, logActivity, qty, fmtDate, fmtDateTime, isoDate, round, reserveNumber, commitNumber,
-  warehouseByCode, warehouseOptions, readStock, applyMovements, exportExcel, stockId
+  warehouseByCode, warehouseOptions, readStock, applyMovements, exportExcel, stockId, stageOf, stageLabel
 } from "./core.js";
 import { collection, doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
@@ -30,7 +30,7 @@ async function start() {
     rows.innerHTML = list.map((t) => `<tr>
       <td class="strong nowrap"><a href="#" data-view="${esc(t.id)}">${esc(t.trNo)}</a></td><td class="nowrap">${fmtDate(t.date)}</td>
       <td>${esc(warehouseByCode(t.from).name)}</td><td>${esc(warehouseByCode(t.to).name)}</td>
-      <td>${t.lines.map((l) => `${esc(l.name)} <b>${qty(l.qtySent)} ${esc(l.unit)}</b>${l.qtyReceived !== undefined && l.qtyReceived !== null ? ` → ${qty(l.qtyReceived)}${l.lossQty > 0 ? ` <span class="badge red">loss ${qty(l.lossQty)}</span>` : ""}` : ""}`).join("<br>")}</td>
+      <td>${t.lines.map((l) => `${esc(l.name)}${esc(stageTag(l))} <b>${qty(l.qtySent)} ${esc(l.unit)}</b>${l.qtyReceived !== undefined && l.qtyReceived !== null ? ` → ${qty(l.qtyReceived)}${l.lossQty > 0 ? ` <span class="badge red">loss ${qty(l.lossQty)}</span>` : ""}` : ""}`).join("<br>")}</td>
       <td>${esc(t.vehicleNo || "—")}</td><td>${badge(t.status)}</td>
       <td><div class="actions">${canOperate && t.status === "IN TRANSIT" ? `<button class="btn sm primary" data-receive="${esc(t.id)}">Receive</button>` : ""}${can("close") && t.status === "IN TRANSIT" ? `<button class="btn sm danger" data-cancel="${esc(t.id)}">Cancel</button>` : ""}</div></td>
     </tr>`).join("");
@@ -39,7 +39,8 @@ async function start() {
     [transfers, items, stock] = await Promise.all([listCollection("transfers", "createdAt", "desc"), listCollection("items"), listCollection("inventory")]);
     render();
   }
-  const available = (wh, itemId) => Number(stock.find((s) => s.id === stockId(wh, itemId))?.qty || 0);
+  const available = (wh, itemId, stage = "RM") => Number(stock.find((s) => s.id === stockId(wh, itemId, stage))?.qty || 0);
+  const stageTag = (l) => (l.category === "Packaging" ? "" : ` · ${stageLabel(l.stage)}`);
 
   page.addEventListener("click", (e) => {
     const t = e.target.closest("[data-tab]"); if (t) { tab = t.dataset.tab; render(); return; }
@@ -74,17 +75,21 @@ async function start() {
     const form = modal.el.querySelector("#tForm");
     const renderL = () => {
       const from = form.from.value;
-      const stocked = items.filter((i) => i.active !== false && i.category !== "Service" && (!from || available(from, i.id) > 0));
+      // every item + stock stage (RM / Ready) that has stock at the source
+      const stocked = items.filter((i) => i.active !== false && i.category !== "Service")
+        .flatMap((i) => (i.category === "Packaging" ? ["RM"] : ["RM", "READY"]).map((st) => ({ i, st })))
+        .filter(({ i, st }) => from && available(from, i.id, st) > 0);
       modal.el.querySelector("#tl").innerHTML = lines.map((l, i) => {
         const it = items.find((x) => x.id === l.itemId);
-        return `<tr data-i="${i}"><td><select data-f="itemId"><option value="">${from ? "Select item in stock…" : "Select source first"}</option>${stocked.map((x) => `<option value="${esc(x.id)}" ${x.id === l.itemId ? "selected" : ""}>${esc(x.name)} (${esc(x.category)})</option>`).join("")}</select></td>
-        <td class="num">${it && from ? qty(available(from, it.id)) : "—"}</td><td><input data-f="qty" type="number" step="any" min="0" class="num" value="${esc(l.qty)}" /></td><td>${esc(it?.unit || "—")}</td>
+        const key = l.itemId ? `${l.itemId}|${stageOf(l.stage)}` : "";
+        return `<tr data-i="${i}"><td><select data-f="itemId"><option value="">${from ? "Select item in stock…" : "Select source first"}</option>${stocked.map(({ i: x, st }) => `<option value="${esc(x.id)}|${st}" ${`${x.id}|${st}` === key ? "selected" : ""}>${esc(x.name)}${x.category === "Packaging" ? "" : ` · ${stageLabel(st)}`} (${esc(x.category)})</option>`).join("")}</select></td>
+        <td class="num">${it && from ? qty(available(from, it.id, l.stage)) : "—"}</td><td><input data-f="qty" type="number" step="any" min="0" class="num" value="${esc(l.qty)}" /></td><td>${esc(it?.unit || "—")}</td>
         <td>${lines.length > 1 ? '<button type="button" class="icon-btn" data-rm><i class="fa-solid fa-trash"></i></button>' : ""}</td></tr>`;
       }).join("");
     };
     const tl = modal.el.querySelector("#tl");
     tl.addEventListener("input", (e) => { const tr = e.target.closest("tr"); if (tr && e.target.dataset.f === "qty") lines[Number(tr.dataset.i)].qty = e.target.value; });
-    tl.addEventListener("change", (e) => { const tr = e.target.closest("tr"); if (tr && e.target.dataset.f === "itemId") { lines[Number(tr.dataset.i)].itemId = e.target.value; renderL(); } });
+    tl.addEventListener("change", (e) => { const tr = e.target.closest("tr"); if (tr && e.target.dataset.f === "itemId") { const [id, st] = e.target.value.split("|"); lines[Number(tr.dataset.i)].itemId = id; lines[Number(tr.dataset.i)].stage = stageOf(st); renderL(); } });
     tl.addEventListener("click", (e) => { if (e.target.closest("[data-rm]")) { lines.splice(Number(e.target.closest("tr").dataset.i), 1); renderL(); } });
     modal.el.querySelector("#addL").addEventListener("click", () => { lines.push({ itemId: "", qty: "" }); renderL(); });
     form.from.addEventListener("change", renderL);
@@ -96,21 +101,21 @@ async function start() {
       try {
         if (!v.from || !v.to) throw new Error("Select both warehouses.");
         if (v.from === v.to) throw new Error("Source and destination must be different.");
-        clean = lines.filter((l) => l.itemId && Number(l.qty) > 0).map((l) => { const it = items.find((x) => x.id === l.itemId); return { itemId: it.id, name: it.name, unit: it.unit, category: it.category, qtySent: round(Number(l.qty)) }; });
+        clean = lines.filter((l) => l.itemId && Number(l.qty) > 0).map((l) => { const it = items.find((x) => x.id === l.itemId); return { itemId: it.id, name: it.name, unit: it.unit, category: it.category, stage: stageOf(l.stage), qtySent: round(Number(l.qty)) }; });
         if (!clean.length) throw new Error("Add at least one item with quantity.");
-        if (new Set(clean.map((l) => l.itemId)).size !== clean.length) throw new Error("Each item can only appear once.");
+        if (new Set(clean.map((l) => `${l.itemId}|${l.stage}`)).size !== clean.length) throw new Error("Each item can only appear once.");
       } catch (error) { toast(error.message, "error"); return; }
       const done = busy(event.currentTarget);
       try {
         const ref = doc(collection(db, "transfers"));
         const trNo = await runTransaction(db, async (tx) => {
-          const movements = clean.map((l) => ({ warehouse: v.from, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: -l.qtySent, note: `Transfer to ${warehouseByCode(v.to).name}` }));
-          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
+          const movements = clean.map((l) => ({ warehouse: v.from, stage: l.stage, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: -l.qtySent, note: `Transfer to ${warehouseByCode(v.to).name}` }));
+          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id, stage: m.stage })));
           const number = await reserveNumber(tx, "ST", { date: v.date });
           commitNumber(tx, number, ref.id);
           applyMovements(tx, stockMap, movements, { type: "TRANSFER OUT", id: ref.id, no: number.number });
           tx.set(ref, { trNo: number.number, date: v.date, from: v.from, to: v.to, vehicleNo: v.vehicleNo.toUpperCase(), remarks: v.remarks, lines: clean, status: "IN TRANSIT", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
-          logActivity(tx, { module: "Stock Transfer", action: "DISPATCH", refId: ref.id, refNo: number.number, summary: `${number.number}: ${warehouseByCode(v.from).name} → ${warehouseByCode(v.to).name}: ${clean.map((l) => `${qty(l.qtySent)} ${l.unit} ${l.name}`).join(", ")}` });
+          logActivity(tx, { module: "Stock Transfer", action: "DISPATCH", refId: ref.id, refNo: number.number, summary: `${number.number}: ${warehouseByCode(v.from).name} → ${warehouseByCode(v.to).name}: ${clean.map((l) => `${qty(l.qtySent)} ${l.unit} ${l.name}${stageTag(l)}`).join(", ")}` });
           return number.number;
         });
         toast(`${trNo} dispatched — now in transit.`, "ok");
@@ -157,8 +162,8 @@ async function start() {
           const ref = doc(db, "transfers", t.id);
           const cur = (await tx.get(ref)).data();
           if (cur.status !== "IN TRANSIT") throw new Error(`Transfer is already ${cur.status}.`);
-          const movements = received.filter((l) => l.qtyReceived > 0).map((l) => ({ warehouse: cur.to, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qtyReceived, note: `Transfer from ${warehouseByCode(cur.from).name}${l.lossQty > 0 ? ` (transit loss ${qty(l.lossQty)}: ${l.lossReason})` : ""}` }));
-          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
+          const movements = received.filter((l) => l.qtyReceived > 0).map((l) => ({ warehouse: cur.to, stage: l.stage, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qtyReceived, note: `Transfer from ${warehouseByCode(cur.from).name}${l.lossQty > 0 ? ` (transit loss ${qty(l.lossQty)}: ${l.lossReason})` : ""}` }));
+          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id, stage: m.stage })));
           applyMovements(tx, stockMap, movements, { type: "TRANSFER IN", id: t.id, no: cur.trNo });
           tx.update(ref, { lines: received, status: "RECEIVED", receiveRemarks: form.remarks.value.trim(), receivedAt: serverTimestamp(), receivedBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
           const losses = received.filter((l) => l.lossQty > 0);
@@ -180,8 +185,8 @@ async function start() {
         const ref = doc(db, "transfers", t.id);
         const cur = (await tx.get(ref)).data();
         if (cur.status !== "IN TRANSIT") throw new Error(`Transfer is already ${cur.status}.`);
-        const movements = cur.lines.map((l) => ({ warehouse: cur.from, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qtySent, note: `Cancelled transfer ${cur.trNo}` }));
-        const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
+        const movements = cur.lines.map((l) => ({ warehouse: cur.from, stage: l.stage, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qtySent, note: `Cancelled transfer ${cur.trNo}` }));
+        const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id, stage: m.stage })));
         applyMovements(tx, stockMap, movements, { type: "TRANSFER CANCEL", id: t.id, no: cur.trNo });
         tx.update(ref, { status: "CANCELLED", cancelReason: reason, cancelledAt: serverTimestamp(), cancelledBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
         logActivity(tx, { module: "Stock Transfer", action: "CANCEL", refId: t.id, refNo: cur.trNo, summary: `Cancelled ${cur.trNo}; stock returned to ${warehouseByCode(cur.from).name}. Reason: ${reason}` });

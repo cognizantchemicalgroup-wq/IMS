@@ -23,7 +23,7 @@ are instructions for the accounts team when they make the Tally entries; nothing
 | Warehouses — create, rename (stock and history stay linked), View details: address, contact person, phone, note | `warehouses.html` | `js/warehouses.js` |
 | Proforma Invoices — standalone or from a Sales Order; IGST/CGST+SGST, terms → due date, HSN summary, bank details, Balance Due; mark paid / cancel | `proforma.html` | `js/proforma.js` |
 | Outward / Dispatch (deducts product **and** drums/carboys/bottles) + Delivery Challan PDF | `outward.html` | `js/outward.js` |
-| Stock by warehouse + item ledger + **Add Existing / Opening Stock** | `inventory.html` | `js/inventory.js` |
+| Stock by warehouse, split into **RM** and **Ready**, packaging, **Under QC (not in stock)**, **Process RM → Ready** (BMR optional), item ledger, **Add Existing / Opening Stock** | `inventory.html` | `js/inventory.js` |
 | Stock transfer between warehouses (in transit → received, transit loss) | `transfers.html` | `js/transfers.js` |
 | Write-off / adjustment (damaged, destroyed, count correction; admin can delete/reverse) | `adjustments.html` | `js/adjustments.js` |
 | Activity log (who did what, to the second; cannot be edited) | `activity.html` | `js/activity.js` |
@@ -50,7 +50,7 @@ One invoice can carry several PO items, and a PO can receive any number of invoi
 | Apple | 10 kg | 5 kg | 5 kg | 0 | 5 kg | 5 kg |
 | Methanol | 20,000 kg | 10,000 kg | 9,970 kg | −30 kg | 9,970 kg | 10,030 kg |
 
-PO statuses: **Open → Partially Received** (invoice entered) **→ Awaiting Kanta** (GRN done) **→ Partially Inwarded → Completed**,
+PO statuses: **Open → Partially Received** (invoice entered) **→ Awaiting Kanta** (GRN done) **→ Awaiting QC** (weighed, in quarantine) **→ Partially Inwarded → Completed**,
 or **Closed** (manager closes a PO that will not be fully supplied, with a reason) / **Cancelled**.
 A PO completes automatically within the tolerance in Settings (default 0.5 %).
 
@@ -95,6 +95,31 @@ the rejected quantity per item with a reason: only the accepted quantity goes in
 quantity is kept separately and shows "Payment Hold — Rejected Inward" against the rejected portion. A **full rejection**
 (Vehicle Rejected) is described below.
 
+### PO status at a glance
+Opening a PO shows a stage flow — **Ordered → Invoiced → GRN → Kanta → QC → In stock → Pending / Closed** — with the quantity
+at each stage, coloured tiles (accepted, in process, rejected, pending, closed balance) and a stacked bar per item
+(green = in stock, purple = in QC quarantine, brown = awaiting Kanta, blue = invoiced awaiting GRN, hatched = closed balance,
+grey = still to come). The PO list shows the same bar for single-item POs.
+
+### QC quarantine (material is not stock until QC releases it)
+At GRN the QC status defaults to **Pending QC — hold in quarantine**. After Kanta the material is weighed but goes to
+**Awaiting QC (quarantine)**: it is **not** added to stock and not payable; the PO shows *Awaiting QC* and Stock → *Under QC (not in stock)*
+lists it. A **manager or admin** then opens Inward → Awaiting QC → **QC release**:
+- **Release to stock** — the released quantity goes into RM stock; any *QC rejected* quantity (with a reason and report reference)
+  never enters stock, counts as rejected on the PO and goes on payment hold for that part only.
+- **QC failed — reject all** — the whole receipt is rejected; nothing ever enters inventory or the stock ledger, and the PO
+  quantity stays pending. Example: one PO, first invoice released, second invoice rejected → only the first is in stock.
+
+If QC was already done before the vehicle reached the gate, choose **Approved (QC already passed)** at GRN — Kanta then adds stock directly.
+The rules enforce that an operator cannot release quarantined material.
+
+### RM and Ready stock (BMR optional)
+Every item can be held as **RM** (raw / as purchased — all inward lands here) and **Ready** (processed) in each warehouse — even the
+same product (e.g. Acetone RM and Acetone Ready). **Stock → Process RM → Ready** takes quantity out of RM and puts the output into
+Ready (same or a different product), shows the process loss, and gets a number `CCPL/PR/{FY}/{SEQ}`. **BMR No. and Batch No. are
+optional** — leave them blank when there is no BMR. Admin can reverse a process entry. Dispatch picks Ready stock by default when
+enough is available, otherwise RM (changeable per line); transfers and write-offs choose RM or Ready per line. Packaging is always RM.
+
 ### Transport (inward)
 Each inward entry records **Transport Arrangement** (Self / CCPL Transport or Party Transport) and the **Transportation Amount**,
 with who created it and when. The amount can be corrected later ("Edit transport", logged). It is internal: shown on the inward
@@ -111,9 +136,11 @@ PDFs carry "System Generated Document — No Signature Required." instead of a s
 
 ## Updating the live site after a new version
 
-1. Replace the files in the GitHub repo with the new version (Vercel redeploys the site automatically).
-2. **Publish the new security rules** — new features (proforma invoices, rejected vehicles / payment hold, warehouses by managers)
-   are refused by the old rules until this is done:
+1. Upload the new files to the hosting (Hostinger `public_html`, keeping `vendor/`; or the GitHub repo if the site is deployed from it).
+   **Never upload `.env`, `service-account.json` or `admin/users.json` into `public_html`** — keep them one folder above it
+   (the PHP login looks there first).
+2. **Publish the new security rules** — new features (QC quarantine / "Awaiting QC", RM → Ready processing, proforma invoices,
+   rejected vehicles / payment hold, warehouses by managers) are refused by the old rules until this is done:
    ```bash
    npm install
    GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run deploy:rules
@@ -190,6 +217,6 @@ Open without `?emulator=1` (or with `?emulator=0`) to use live data again.
 | Role | Can do |
 |---|---|
 | admin | Everything, incl. settings, users, delete/reverse entries |
-| manager | POs, quotations, sales orders, short-close, write-offs + all operations |
-| operator | Inward, kanta, GRN, dispatch, transfers, masters |
+| manager | POs, quotations, sales orders, short-close, write-offs, **QC release** + all operations |
+| operator | Inward, kanta, GRN, dispatch, transfers, RM → Ready processing, masters |
 | viewer | Read only |

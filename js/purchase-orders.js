@@ -11,6 +11,55 @@ import { poSpec, showDocument, safeFileName } from "./pdf.js";
 import { arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const n = (v) => Number(v) || 0;
+
+/* ---------- Status graphics ---------- */
+const pct = (part, whole) => (whole > 0 ? Math.max(0, Math.min(100, (part / whole) * 100)) : 0);
+/** Stacked bar for one PO line: accepted · in QC · awaiting Kanta · invoiced (awaiting GRN) · closed balance · (grey = still pending). */
+function segBar(q, big = false) {
+  const base = Math.max(q.ordered, q.accepted + q.qcPending + q.awaitingKanta + q.awaitingGrn + q.closedBalance) || 1;
+  const seg = (cls, v, title) => (v > 0 ? `<i class="${cls}" style="width:${pct(v, base).toFixed(2)}%" title="${title} ${qty(v)}"></i>` : "");
+  return `<div class="segbar${big ? " lg" : ""}">${seg("seg-acc", q.accepted, "Accepted (in stock)")}${seg("seg-qc", q.qcPending, "In QC quarantine")}${seg("seg-kanta", q.awaitingKanta, "Awaiting Kanta")}${seg("seg-grn", q.awaitingGrn, "Invoiced, awaiting GRN")}${seg("seg-closed", q.closedBalance, "Closed balance")}</div>`;
+}
+const LEGEND = '<div class="legend"><span><i class="seg-acc"></i>Accepted (in stock)</span><span><i class="seg-qc"></i>In QC quarantine</span><span><i class="seg-kanta"></i>Awaiting Kanta</span><span><i class="seg-grn"></i>Invoiced, awaiting GRN</span><span><i class="seg-closed"></i>Closed balance</span><span><i style="background:#ecebf3"></i>Still pending</span></div>';
+
+/** Big-picture view of a goods PO: stage flow + quantity tiles + one stacked bar per item. */
+function poVisual(po, qs) {
+  const units = [...new Set(po.lines.map((l) => l.unit))];
+  const one = units.length === 1 ? units[0] : "";
+  const sum = (k) => round(qs.reduce((s, q) => s + q[k], 0));
+  const capped = (k) => qs.reduce((s, q) => s + Math.min(q[k], q.ordered), 0);
+  const ordered = sum("ordered");
+  const fig = (k) => (one ? `${qty(sum(k))} ${one}` : `${Math.round(pct(capped(k), ordered))}%`);
+  const done = (k) => capped(k) + 0.0005 >= ordered;
+  const closed = CLOSED_PO_STATUSES.includes(po.status);
+  const finished = po.status === "COMPLETED" || closed;
+  const step = (title, value, sub, cls, fill) => `<div class="flow-step ${cls}"><div class="t">${title}</div><div class="n">${value}</div><div class="s">${sub}</div><div class="bar"><i style="width:${fill.toFixed(1)}%"></i></div></div>`;
+  const stateOf = (k, waiting) => (done(k) ? "done" : waiting > 0 ? "active" : sum(k) > 0 ? "active" : "idle");
+  const inProcess = sum("awaitingGrn") + sum("awaitingKanta") + sum("qcPending");
+  const steps = [
+    step("Ordered", one ? `${qty(ordered)} ${one}` : `${po.lines.length} items`, fmtDate(po.date), "done", 100),
+    step("Invoiced", fig("invoiced"), sum("awaitingGrn") ? `${qty(sum("awaitingGrn"))} awaiting GRN` : "gate entry", stateOf("invoiced", 0), pct(capped("invoiced"), ordered)),
+    step("GRN", fig("grn"), "counted at gate", stateOf("grn", 0), pct(capped("grn"), ordered)),
+    step("Kanta", fig("kanta"), sum("awaitingKanta") ? `${qty(sum("awaitingKanta"))} awaiting` : sum("shortExcess") ? `short/excess ${fmtDiff(sum("shortExcess"))}` : "weighed", stateOf("kanta", sum("awaitingKanta")), pct(capped("kanta"), ordered)),
+    step("QC", sum("qcPending") ? `${qty(sum("qcPending"))}${one ? ` ${one}` : ""}` : "Clear", sum("qcPending") ? "in quarantine" : "nothing held", sum("qcPending") ? "warn" : capped("accepted") > 0 ? "done" : "idle", sum("qcPending") ? 50 : capped("accepted") > 0 ? 100 : 0),
+    step("In stock", fig("accepted"), `${Math.round(pct(capped("accepted"), ordered))}% of order`, done("accepted") ? "done" : capped("accepted") > 0 ? "active" : "idle", pct(capped("accepted"), ordered)),
+    step(closed ? "Closed" : finished ? "Completed" : "Pending", closed ? `${one ? `${qty(sum("closedBalance"))} ${one}` : "with balance"}` : finished ? "✓" : one ? `${qty(sum("pending"))} ${one}` : `${Math.round(100 - pct(capped("accepted"), ordered))}%`, closed ? "closed balance — not received" : finished ? fmtDateTime(po.updatedAt) : "still to come", closed ? "closed" : finished ? "done" : "active", finished ? 100 : pct(capped("accepted"), ordered))
+  ].join("");
+  const tiles = one ? `<div class="tiles">
+      <div class="tile"><div class="t">Ordered</div><div class="n">${qty(ordered)}</div></div>
+      <div class="tile green"><div class="t">Accepted in stock</div><div class="n">${qty(sum("accepted"))}</div></div>
+      <div class="tile indigo"><div class="t">In process</div><div class="n">${qty(inProcess)}</div></div>
+      <div class="tile red"><div class="t">Rejected</div><div class="n">${qty(sum("rejected"))}</div></div>
+      <div class="tile amber"><div class="t">Pending</div><div class="n">${qty(sum("pending"))}</div></div>
+      <div class="tile gold"><div class="t">Closed balance</div><div class="n">${qty(sum("closedBalance"))}</div></div></div>` : "";
+  const items = po.lines.map((l, i) => {
+    const q = qs[i];
+    return `<div class="item-flow"><div class="nm">${esc(l.name)}<div class="small muted">${qty(q.ordered)} ${esc(l.unit)} ordered</div></div>${segBar(q, true)}
+      <div class="fig">Accepted <b>${qty(q.accepted)}</b> · QC <b>${qty(q.qcPending)}</b> · Kanta pending <b>${qty(q.awaitingKanta)}</b> · Awaiting GRN <b>${qty(q.awaitingGrn)}</b> · Pending <b>${qty(q.pending)}</b>${q.closedBalance ? ` · Closed balance <b>${qty(q.closedBalance)}</b>` : ""}${q.rejected ? ` · <span style="color:var(--danger)">Rejected <b>${qty(q.rejected)}</b></span>` : ""} ${esc(l.unit)}</div></div>`;
+  }).join("");
+  return `<div class="section-title">PO status at a glance</div><div class="flow" id="poFlow">${steps}</div>${tiles}${items}${LEGEND}`;
+}
+
 const page = await initPage("po");
 if (page) start();
 
@@ -62,7 +111,7 @@ async function start() {
         <td>${esc(warehouseByCode(p.warehouse).name)}</td>
         <td>${single ? `${esc(single.name)}<div class="small muted">${qty(single.qty)} ${esc(single.unit)}</div>` : `${p.lines.length} items`}</td>
         <td class="num">${money(p.totals?.total)}</td>
-        <td>${isServicePo(p) ? `<span class="small muted">${p.status === "SERVICE COMPLETED" ? `Bill ${esc(p.serviceCompletion?.billNo || "")}` : "Service — no inward"}</span>` : `${progressBar(received, ordered)}<div class="progress-label">${single ? `${qty(single.receivedQty || 0)} / ${qty(single.qty)} ${esc(single.unit)}` : `${Math.round((received / (ordered || 1)) * 100)}%`}</div>`}</td>
+        <td>${isServicePo(p) ? `<span class="small muted">${p.status === "SERVICE COMPLETED" ? `Bill ${esc(p.serviceCompletion?.billNo || "")}` : "Service — no inward"}</span>` : `${single ? segBar(poLineQty(single, p.status)) : progressBar(received, ordered)}<div class="progress-label">${single ? `${qty(single.receivedQty || 0)} / ${qty(single.qty)} ${esc(single.unit)}` : `${Math.round((received / (ordered || 1)) * 100)}%`}</div>`}</td>
         <td>${badge(p.status)}</td>
         <td><div class="actions"><button class="btn sm" data-pdf="${esc(p.id)}" title="PDF"><i class="fa-solid fa-file-pdf"></i></button><button class="btn sm" data-view="${esc(p.id)}">Open</button></div></td>
       </tr>`;
@@ -260,7 +309,7 @@ async function start() {
     const receipts = [...receiptMap.values()].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
     const mineOf = (r) => r.lines.filter((l) => l.poId === po.id);
     const log = logSnap.docs.map((d) => d.data()).sort((a, b) => (b.at?.seconds || 0) - (a.at?.seconds || 0));
-    const inProcess = receipts.filter((r) => ["KANTA PENDING", "GRN PENDING"].includes(r.stage));
+    const inProcess = receipts.filter((r) => ["KANTA PENDING", "GRN PENDING", "QC PENDING"].includes(r.stage));
     const onHold = receipts.filter(isOnHold);
     const service = isServicePo(po);
     const transportTotal = round(receipts.filter((r) => r.stage !== "CANCELLED").reduce((s, r) => s + n(r.transportAmount), 0), 2);
@@ -292,15 +341,15 @@ async function start() {
         <div class="table-wrap"><table class="table"><thead><tr><th>Service</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>
           ${po.lines.map((l) => `<tr><td class="strong">${esc(l.name)}<div class="small muted">${esc(l.description || "")}</div></td><td class="num">${qty(n(l.qty))} ${esc(l.unit)}</td><td class="num">${money(l.rate)}</td><td class="num">${money(n(l.qty) * n(l.rate))}</td></tr>`).join("")}
         </tbody></table></div><p class="small muted">A Service PO needs no inward, GRN or Kanta. When the bill / service confirmation is received, mark the service completed to close the PO.</p>`
-        : `<div class="section-title">Item-wise tracking (Kanta is final; only accepted quantity counts)</div>
-        <div class="table-wrap"><table class="table" id="poLines"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Rejected</th><th class="num">Accepted (Inward)</th><th class="num">Awaiting Kanta</th><th class="num">Closed Balance</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
+        : `${poVisual(po, qs)}<div class="section-title">Item-wise tracking (Kanta is final; only accepted quantity counts)</div>
+        <div class="table-wrap"><table class="table" id="poLines"><thead><tr><th>Item</th><th class="num">PO Qty</th><th class="num">Invoiced</th><th class="num">GRN Qty</th><th class="num">Kanta Qty</th><th class="num">Short / Excess</th><th class="num">Rejected</th><th class="num">Accepted (Inward)</th><th class="num">Awaiting Kanta</th><th class="num">In QC</th><th class="num">Closed Balance</th><th class="num">Pending</th><th class="num">Payable ₹</th><th>Progress</th></tr></thead><tbody>
           ${po.lines.map((l, i) => {
             const q = qs[i];
             return `<tr data-line="${esc(l.name)}"><td class="strong">${esc(l.name)}</td><td class="num">${qty(q.ordered)} ${esc(l.unit)}</td><td class="num">${qty(q.invoiced)}</td><td class="num">${qty(q.grn)}</td><td class="num">${qty(q.kanta)}</td>
-              <td class="num strong" style="color:${diffColor(q.shortExcess)}">${fmtDiff(q.shortExcess)}</td><td class="num" style="color:${q.rejected ? "var(--danger)" : "inherit"}">${qty(q.rejected)}</td><td class="num strong">${qty(q.accepted)}</td><td class="num">${qty(q.awaitingKanta)}</td>
-              <td class="num" style="color:${q.closedBalance ? "#8a6a22" : "inherit"}">${qty(q.closedBalance)}</td><td class="num strong">${qty(q.pending)}</td><td class="num">${money(q.accepted * n(l.rate))}</td><td>${progressBar(q.accepted, q.ordered)}</td></tr>`;
+              <td class="num strong" style="color:${diffColor(q.shortExcess)}">${fmtDiff(q.shortExcess)}</td><td class="num" style="color:${q.rejected ? "var(--danger)" : "inherit"}">${qty(q.rejected)}</td><td class="num strong">${qty(q.accepted)}</td><td class="num">${qty(q.awaitingKanta)}</td><td class="num">${qty(q.qcPending)}</td>
+              <td class="num" style="color:${q.closedBalance ? "#8a6a22" : "inherit"}">${qty(q.closedBalance)}</td><td class="num strong">${qty(q.pending)}</td><td class="num">${money(q.accepted * n(l.rate))}</td><td>${segBar(q)}</td></tr>`;
           }).join("")}
-          ${po.lines.length > 1 ? `<tr class="strong"><td>Total</td><td class="num">${qty(totalOf("ordered"))}</td><td class="num">${qty(totalOf("invoiced"))}</td><td class="num">${qty(totalOf("grn"))}</td><td class="num">${qty(totalOf("kanta"))}</td><td class="num">${fmtDiff(totalOf("shortExcess"))}</td><td class="num">${qty(totalOf("rejected"))}</td><td class="num">${qty(totalOf("accepted"))}</td><td class="num">${qty(totalOf("awaitingKanta"))}</td><td class="num">${qty(totalOf("closedBalance"))}</td><td class="num">${qty(totalOf("pending"))}</td><td></td><td></td></tr>` : ""}
+          ${po.lines.length > 1 ? `<tr class="strong"><td>Total</td><td class="num">${qty(totalOf("ordered"))}</td><td class="num">${qty(totalOf("invoiced"))}</td><td class="num">${qty(totalOf("grn"))}</td><td class="num">${qty(totalOf("kanta"))}</td><td class="num">${fmtDiff(totalOf("shortExcess"))}</td><td class="num">${qty(totalOf("rejected"))}</td><td class="num">${qty(totalOf("accepted"))}</td><td class="num">${qty(totalOf("awaitingKanta"))}</td><td class="num">${qty(totalOf("qcPending"))}</td><td class="num">${qty(totalOf("closedBalance"))}</td><td class="num">${qty(totalOf("pending"))}</td><td></td><td></td></tr>` : ""}
         </tbody></table></div>
         <div class="section-title">Invoices / receipts (${receipts.length})</div>
         ${receipts.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Receipt</th><th>Date</th><th>Invoice</th><th>Item</th><th class="num">Invoice</th><th class="num">GRN</th><th class="num">Kanta</th><th class="num">Short/Excess</th><th class="num">Rejected</th><th class="num">Accepted</th><th>GRN No.</th><th>Transport (internal)</th><th>Stage</th><th>Accounts</th></tr></thead><tbody>
@@ -351,7 +400,7 @@ async function start() {
     // Passive close: the remaining quantity will not be supplied; it is kept as a closed balance, not as pending.
     $("#closePo")?.addEventListener("click", async (e) => {
       const button = e.currentTarget;
-      if (inProcess.length) { toast(`${inProcess.length} inward entr${inProcess.length === 1 ? "y is" : "ies are"} still pending GRN / Kanta for this PO. Complete or delete them first.`, "error"); return; }
+      if (inProcess.length) { toast(`${inProcess.length} inward entr${inProcess.length === 1 ? "y is" : "ies are"} still pending GRN / Kanta / QC for this PO. Complete or delete them first.`, "error"); return; }
       const balance = po.lines.map((l, i) => `${l.name}: ${qty(qs[i].pending)} ${l.unit}`).join(", ");
       const reason = await confirmDialog(`Close ${po.poNo} with balance? Remaining quantity (${balance}) will be marked as closed without receipt — kept in history, removed from pending — and no more inward will be accepted unless the PO is reopened.`,
         { title: "Close PO with Balance", okText: "Close PO", input: { label: "Reason", required: true, placeholder: "e.g. Vendor cannot supply the balance / requirement changed" } });
@@ -362,7 +411,7 @@ async function start() {
           const ref = doc(db, "purchaseOrders", po.id);
           const cur = (await tx.get(ref)).data();
           if (!OPEN_PO_STATUSES.includes(cur.status)) throw new Error(`PO is already ${cur.status}.`);
-          if (cur.lines.some((l) => n(l.pendingKantaQty) > 0.0005 || n(l.invoicedQty) - n(l.grnQty) > 0.0005)) throw new Error("Material is still in process (GRN / Kanta pending) on this PO.");
+          if (cur.lines.some((l) => n(l.pendingKantaQty) > 0.0005 || n(l.qcPendingQty) > 0.0005 || n(l.invoicedQty) - n(l.grnQty) > 0.0005)) throw new Error("Material is still in process (GRN / Kanta / QC pending) on this PO.");
           const lines = cur.lines.map((l) => ({ ...l, closedBalanceQty: Math.max(0, round(n(l.qty) - n(l.receivedQty))) }));
           const closure = { type: "CLOSE", reason, at: new Date().toISOString(), by: who(), balances: lines.map((l) => ({ lineId: l.lineId, name: l.name, unit: l.unit, qty: l.closedBalanceQty })) };
           tx.update(ref, { status: "CLOSED WITH BALANCE", lines, closeReason: reason, closedAt: serverTimestamp(), closedBy: who(), closeHistory: arrayUnion(closure), updatedAt: serverTimestamp() });

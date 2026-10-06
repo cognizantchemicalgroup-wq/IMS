@@ -122,7 +122,11 @@ async function addMaster(file, values, selects = {}) {
   await expectToast();
 }
 const one = async (col, field, value) => { const s = await adb.collection(col).where(field, "==", value).get(); return s.docs[0] ? { id: s.docs[0].id, ...s.docs[0].data() } : null; };
-const stockOf = async (wh, itemName) => { const s = await adb.collection("inventory").where("warehouse", "==", wh).where("itemName", "==", itemName).get(); return s.empty ? 0 : s.docs[0].data().qty; };
+const stockOf = async (wh, itemName, stage = "RM") => {
+  const s = await adb.collection("inventory").where("warehouse", "==", wh).where("itemName", "==", itemName).get();
+  const d = s.docs.find((x) => (x.data().stage === "READY" ? "READY" : "RM") === stage);
+  return d ? d.data().qty : 0;
+};
 
 async function fillPo(pg, { vendor, warehouse, lines, series = "PH", date, poType }) {
   const m = pg.locator(".modal-backdrop").last();
@@ -179,11 +183,12 @@ async function receiptEntry({ poNo, invoiceNo, qtys, warehouse, transport = "PAR
   return docs[0];
 }
 // GRN: qtys = { "Item name": grnQty } (defaults to invoice qty)
-async function grnStep(receipt, qtys = {}) {
+async function grnStep(receipt, qtys = {}, { qcPending = false } = {}) {
   await goto("inward.html");
   await page.click('[data-tab="GRN PENDING"]');
   await page.locator(`[data-grn="${receipt.id}"]`).click();
   const m = modal();
+  if (!qcPending) await selectContaining(m.locator("select[name=qc]"), "Approved (QC");
   for (const [name, q] of Object.entries(qtys)) await m.locator("tr", { hasText: name }).locator("input").fill(String(q));
   await m.locator("#saveG").click();
   await expectToast();
@@ -443,7 +448,7 @@ try {
   check(detailText.includes("INV-A1") && detailText.includes("INV-A2") && detailText.includes("Kanta Qty") && detailText.includes("-0.2"), "PO detail shows PO/GRN/Kanta/Short/Inward/Pending and every invoice");
   check(!/\bnull\b|NaN|undefined/.test(detailText), "PO detail shows no null / NaN values");
   const appleRow = await modal().locator('#poLines tr[data-line="Apple"] td').allTextContents();
-  check(appleRow[1].startsWith("10") && appleRow[3] === "10" && appleRow[4] === "9.8" && appleRow[5] === "-0.2" && appleRow[6] === "0" && appleRow[7] === "9.8" && appleRow[9] === "0" && appleRow[10] === "0.2", `Apple row: PO 10 · GRN 10 · Kanta 9.8 · Short -0.2 · Rejected 0 · Accepted 9.8 · Pending 0.2 (${appleRow.slice(1, 11).join(" | ")})`);
+  check(appleRow[1].startsWith("10") && appleRow[3] === "10" && appleRow[4] === "9.8" && appleRow[5] === "-0.2" && appleRow[6] === "0" && appleRow[7] === "9.8" && appleRow[9] === "0" && appleRow[10] === "0" && appleRow[11] === "0.2", `Apple row: PO 10 · GRN 10 · Kanta 9.8 · Short -0.2 · Rejected 0 · Accepted 9.8 · QC 0 · Pending 0.2 (${appleRow.slice(1, 12).join(" | ")})`);
   check(detailText.includes("Transport cost (internal, not on PO)₹4,500.00") && detailText.includes("Self / CCPL Transport"), "PO detail shows the transport cost internally");
   await modal().locator("#pdfPo").click();
   await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
@@ -700,7 +705,7 @@ try {
   await page.goto(`${BASE}/purchase-orders.html?open=${pB.id}`);
   await modal().locator("#reopenPo").waitFor();
   const closedRow = await modal().locator('#poLines tr[data-line="Toluene"] td').allTextContents();
-  check(closedRow[9] === "10" && closedRow[10] === "0" && (await modal().textContent()).includes("Closed with Balance"), `closed balance 10 shown separately, pending 0 (${closedRow.slice(1, 11).join(" | ")})`);
+  check(closedRow[10] === "10" && closedRow[11] === "0" && (await modal().textContent()).includes("Closed with Balance"), `closed balance 10 shown separately, pending 0 (${closedRow.slice(1, 11).join(" | ")})`);
   await page.screenshot({ path: path.join(OUT, "16-po-closed-with-balance.png") });
   await closeAllModals();
   await goto("inward.html"); await page.click("#newEntry");
@@ -767,6 +772,89 @@ try {
   await expectToast();
   sPo = await one("purchaseOrders", "poNo", svc.poNo);
   check(sPo.status === "SERVICE COMPLETED" && sPo.serviceCompletion.billNo === "GA-TR-0045" && sPo.serviceCompletion.by.name === "Test Admin", "service marked completed with the bill → PO closed (no inward needed)");
+
+  /* ================= 6h. QC quarantine, rejected 2nd invoice, RM → Ready ================= */
+  console.log("\n6h. QC quarantine · second invoice rejected never reaches stock · RM → Ready (no BMR)");
+  const qPo = await createPo("Kalyan Polymers", "PG-153", [{ item: "Acetone", qty: 600, rate: 70 }]);
+  const acRm0 = await stockOf("PG-153", "Acetone");
+  const q1 = await receiptEntry({ poNo: qPo.poNo, invoiceNo: "KP-81", qtys: { Acetone: 300 } });
+  await grnStep(q1, {}, { qcPending: true });
+  await kantaStep(q1);
+  let q1d = await adb.collection("receipts").doc(q1.id).get().then((d) => d.data());
+  let qP = await one("purchaseOrders", "poNo", qPo.poNo);
+  check(q1d.stage === "QC PENDING" && (await stockOf("PG-153", "Acetone")) === acRm0, "GRN 'Pending QC' → after Kanta the 300 kg is in quarantine, NOT in stock");
+  check(qP.status === "AWAITING QC" && qP.lines[0].qcPendingQty === 300 && (qP.lines[0].receivedQty || 0) === 0, "PO shows AWAITING QC with 300 kg in QC, nothing received yet");
+  await goto("inventory.html"); await page.click('[data-tab="QC"]');
+  check((await page.textContent("#extra")).includes("KP-81"), "Stock page → 'Under QC (not in stock)' lists the quarantined invoice");
+  await goto("inward.html"); await page.click('[data-tab="QC PENDING"]');
+  await page.locator(`[data-qc="${q1.id}"]`).click();
+  m = modal();
+  await m.locator("input[name=qr0]").fill("20");
+  await m.locator("input[name=reportRef]").fill("RM2610081 moisture");
+  await m.locator("#qcRelease").click();
+  check((await expectToast("error")).includes("reason"), "QC rejected quantity needs a reason");
+  await m.locator("input[name=rejectReason]").fill("2 drums high moisture");
+  await page.screenshot({ path: path.join(OUT, "18-qc-release.png") });
+  await m.locator("#qcRelease").click();
+  await expectToast();
+  q1d = await adb.collection("receipts").doc(q1.id).get().then((d) => d.data());
+  qP = await one("purchaseOrders", "poNo", qPo.poNo);
+  check(q1d.stage === "COMPLETED" && q1d.lines[0].acceptedQty === 280 && q1d.lines[0].qcRejectedQty === 20 && q1d.paymentHold?.scope === "PARTIAL", "QC release: 280 kg released, 20 kg QC rejected (payment hold on the rejected part)");
+  check((await stockOf("PG-153", "Acetone")) === acRm0 + 280, "only the released 280 kg enters RM stock");
+  check(qP.lines[0].receivedQty === 280 && qP.lines[0].rejectedQty === 20 && qP.lines[0].qcPendingQty === 0 && qP.status === "PARTIALLY INWARDED", "PO: received 280, rejected 20, QC 0, 320 still pending");
+
+  const q2 = await receiptEntry({ poNo: qPo.poNo, invoiceNo: "KP-82", qtys: { Acetone: 300 } });
+  await grnStep(q2, {}, { qcPending: true });
+  await kantaStep(q2);
+  await goto("inward.html"); await page.click('[data-tab="QC PENDING"]');
+  await page.locator(`[data-qc="${q2.id}"]`).click();
+  await modal().locator("#qcRejectAll").click();
+  await page.locator("#confirmInput").fill("UV absorbance failed");
+  await page.click("#confirmOk");
+  await expectToast("info");
+  const q2d = await adb.collection("receipts").doc(q2.id).get().then((d) => d.data());
+  const q2Ledger = await adb.collection("stockLedger").where("refId", "==", q2.id).get();
+  qP = await one("purchaseOrders", "poNo", qPo.poNo);
+  check(q2d.stage === "REJECTED" && q2Ledger.empty && (await stockOf("PG-153", "Acetone")) === acRm0 + 280, "second invoice rejected at QC → never in inventory, no stock-ledger entry");
+  check(qP.lines[0].receivedQty === 280 && qP.lines[0].qcPendingQty === 0 && qP.lines[0].rejectedQty === 320 && qP.status === "PARTIALLY INWARDED", "PO: rejected invoice does not count as received; 320 kg still pending");
+  const q3 = await receiptEntry({ poNo: qPo.poNo, invoiceNo: "KP-83", qtys: { Acetone: 20 } });
+  await grnStep(q3, {}, { qcPending: true });
+  await kantaStep(q3);
+  await page.goto(`${BASE}/purchase-orders.html?open=${qP.id}`);
+  await modal().locator("#poFlow").waitFor();
+  const flowText = await modal().locator("#poFlow").textContent();
+  check(flowText.includes("QC") && flowText.includes("In stock") && await modal().locator(".segbar").count() > 0, "PO detail shows the stage flow (Ordered → … → QC → In stock) and progress bars");
+  await page.screenshot({ path: path.join(OUT, "19-po-status-visual.png"), fullPage: true });
+  await closeAllModals();
+
+  await goto("inventory.html"); await page.click("#processBtn");
+  m = modal();
+  await m.locator("select[name=warehouse]").selectOption("PG-153");
+  await m.locator("select[name=warehouse]").dispatchEvent("change");
+  await selectContaining(m.locator('tr[data-k="in"] select[data-f=itemId]').first(), "Acetone");
+  await m.locator('tr[data-k="in"] input[data-f=qty]').first().fill("100");
+  check((await m.locator('tr[data-k="out"] select[data-f=itemId]').first().inputValue()) !== "" && (await m.locator('tr[data-k="out"] input[data-f=qty]').first().inputValue()) === "100", "output defaults to the same product and quantity");
+  await page.screenshot({ path: path.join(OUT, "20-process-rm-ready.png") });
+  await m.locator("#savePr").click();
+  await expectToast();
+  const cv = (await adb.collection("conversions").get()).docs.map((d) => d.data())[0];
+  check(cv && /^CCPL\/PR\/\d\d-\d\d\/0001$/.test(cv.cvNo) && !cv.bmrNo && cv.lossQty === 0, `processed without BMR: ${cv?.cvNo}`);
+  check((await stockOf("PG-153", "Acetone")) === acRm0 + 180 && (await stockOf("PG-153", "Acetone", "READY")) === 100, "same product: RM 100 kg less, Ready 100 kg more");
+  await goto("inventory.html"); await page.click('[data-tab="READY"]');
+  check((await page.textContent("#rows")).includes("Acetone"), "Stock → Ready tab lists Acetone");
+  await page.screenshot({ path: path.join(OUT, "21-stock-ready.png"), fullPage: true });
+  await goto("outward.html"); await page.click("#newOut");
+  m = modal();
+  await m.locator("select[name=mode]").selectOption("DIRECT");
+  await selectContaining(m.locator("select[name=customerId]"), "Deepak");
+  await m.locator("select[name=warehouse]").selectOption("PG-153");
+  await selectContaining(m.locator("select[data-f=itemId]").first(), "Acetone");
+  await m.locator("input[data-f=qty]").first().fill("40");
+  check((await m.locator("select[data-f=stage]").first().inputValue()) === "READY", "dispatch picks Ready stock by default when enough is available");
+  await m.locator("#saveOut").click();
+  await expectToast();
+  await closeAllModals();
+  check((await stockOf("PG-153", "Acetone", "READY")) === 60 && (await stockOf("PG-153", "Acetone")) === acRm0 + 180, "dispatch 40 kg from Ready: Ready 100 → 60, RM untouched");
 
   /* ================= 7. Transfer PG-106 → Taloja with transit loss ================= */
   console.log("\n7. Stock transfer PG → Taloja");
@@ -863,7 +951,7 @@ try {
   await m.locator("input[data-f=qty]").first().fill("5000");
   await m.locator("input[data-f=qty]").first().dispatchEvent("change");
   await m.locator("#saveOut").click();
-  check((await expectToast("error")).includes("Insufficient stock"), "dispatch more than available stock is blocked");
+  check((await expectToast("error")).includes("Insufficient RM stock"), "dispatch more than available stock is blocked");
   await closeAllModals();
 
   await goto("outward.html"); await page.click("#newOut");
@@ -1121,6 +1209,8 @@ try {
     const held = await fs.getDocs(fs.query(fs.collection(db, "receipts"), fs.where("invoiceNo", "==", "GA-INV-2")));
     await tryIt("liftPaymentHold", () => fs.updateDoc(held.docs[0].ref, { "paymentHold.active": false }));
     await tryIt("unrejectReceipt", () => fs.updateDoc(held.docs[0].ref, { stage: "GRN PENDING" }));
+    const quarantined = await fs.getDocs(fs.query(fs.collection(db, "receipts"), fs.where("stage", "==", "QC PENDING"), fs.limit(1)));
+    await tryIt("qcReleaseByOperator", () => fs.updateDoc(quarantined.docs[0].ref, { stage: "COMPLETED" }));
     return results;
   });
   check(Object.values(denied).every((v) => v === "permission-denied"), `operator write attempts denied by rules: ${JSON.stringify(denied)}`);

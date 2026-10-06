@@ -3,7 +3,7 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, qty, fmtDate, fmtDateTime, isoDate, round, reserveNumber, commitNumber,
-  warehouseByCode, warehouseOptions, deriveOrderStatus, readStock, applyMovements, exportExcel, stockId
+  warehouseByCode, warehouseOptions, deriveOrderStatus, readStock, applyMovements, exportExcel, stockId, stageOf, stageLabel
 } from "./core.js";
 import { challanSpec, showDocument, safeFileName } from "./pdf.js";
 import { collection, doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -40,7 +40,7 @@ async function start() {
     rows.innerHTML = list.map((o) => `<tr>
       <td class="strong nowrap">${esc(o.dcNo)}</td><td class="nowrap">${fmtDate(o.date)}</td><td>${esc(o.customer?.name)}</td><td class="nowrap">${esc(o.soNo || "—")}</td>
       <td>${esc(warehouseByCode(o.warehouse).name)}</td>
-      <td>${o.lines.map((l) => `${esc(l.name)} <b>${qty(l.qty)} ${esc(l.unit)}</b>`).join("<br>")}</td>
+      <td>${o.lines.map((l) => `${esc(l.name)}${l.stage === "READY" ? " · Ready" : ""} <b>${qty(l.qty)} ${esc(l.unit)}</b>`).join("<br>")}</td>
       <td class="small">${(o.packaging || []).map((p) => `${esc(p.name)} × ${qty(p.qty)}`).join("<br>") || '<span class="muted">Bulk</span>'}</td>
       <td>${esc(o.invoiceNo || "—")}</td><td>${esc(o.vehicleNo || "—")}</td><td>${badge(o.status)}</td>
       <td><div class="actions"><button class="btn sm" data-dc="${esc(o.id)}" title="Delivery challan PDF"><i class="fa-solid fa-file-pdf"></i></button>${isAdmin() && o.status === "POSTED" ? `<button class="btn sm danger" data-cancel="${esc(o.id)}">Cancel</button>` : ""}</div></td>
@@ -55,7 +55,13 @@ async function start() {
     render();
   }
 
-  const available = (wh, itemId) => Number(stock.find((s) => s.id === stockId(wh, itemId))?.qty || 0);
+  const available = (wh, itemId, stage = "RM") => Number(stock.find((s) => s.id === stockId(wh, itemId, stage))?.qty || 0);
+  // Product lines pick their stock stage: Ready when there is enough Ready stock, else RM (user can override).
+  const lineStage = (wh, l) => {
+    if (l.stage) return stageOf(l.stage);
+    const need = Number(l.qty || 0);
+    return wh && l.itemId && available(wh, l.itemId, "READY") > 0 && available(wh, l.itemId, "READY") >= need ? "READY" : "RM";
+  };
   const packagingItems = () => items.filter((i) => i.category === "Packaging" && i.active !== false);
   const productItems = () => items.filter((i) => i.category !== "Packaging" && i.category !== "Service" && i.active !== false);
 
@@ -100,7 +106,7 @@ async function start() {
           <label class="field span-2"><span>Remarks</span><input name="remarks" /></label>
         </div>
         <div class="section-title">Products</div>
-        <div class="table-wrap"><table class="table"><thead><tr><th style="min-width:200px">Product</th><th class="num">Qty</th><th>Unit</th><th class="num">In stock</th><th style="min-width:170px">Packed In</th><th class="num">Qty per container</th><th class="num">Containers</th><th>Batch</th><th></th></tr></thead><tbody id="lineRows"></tbody></table></div>
+        <div class="table-wrap"><table class="table"><thead><tr><th style="min-width:200px">Product</th><th class="num">Qty</th><th>Unit</th><th>From stock</th><th class="num">In stock</th><th style="min-width:170px">Packed In</th><th class="num">Qty per container</th><th class="num">Containers</th><th>Batch</th><th></th></tr></thead><tbody id="lineRows"></tbody></table></div>
         <button type="button" class="btn sm" id="addLine" style="margin-top:8px"><i class="fa-solid fa-plus"></i> Add product</button>
         <div class="section-title">Other packaging material used</div>
         <div class="table-wrap"><table class="table"><thead><tr><th style="min-width:200px">Packaging item</th><th class="num">Qty</th><th></th></tr></thead><tbody id="extraRows"></tbody></table></div>
@@ -112,7 +118,7 @@ async function start() {
     });
     const form = modal.el.querySelector("#oForm");
     const so = () => sos.find((s) => s.id === form.soId.value);
-    const blankLine = () => ({ itemId: "", qty: "", packItemId: "", packSize: "", containers: "", batchNo: "", soLineId: "" });
+    const blankLine = () => ({ itemId: "", stage: "", qty: "", packItemId: "", packSize: "", containers: "", batchNo: "", soLineId: "" });
 
     function renderLines() {
       const wh = form.warehouse.value;
@@ -123,7 +129,8 @@ async function start() {
           <td>${soLine ? `<b>${esc(soLine.name)}</b><div class="small muted">SO pending ${qty(Math.max(0, soLine.qty - (soLine.dispatchedQty || 0)))} ${esc(soLine.unit)}</div>` : `<select data-f="itemId"><option value="">Select…</option>${productItems().map((x) => `<option value="${esc(x.id)}" ${x.id === l.itemId ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>`}</td>
           <td><input data-f="qty" type="number" step="any" min="0" value="${esc(l.qty)}" class="num" /></td>
           <td>${esc(it?.unit || soLine?.unit || "—")}</td>
-          <td class="num ${wh && it && available(wh, it.id) < Number(l.qty || 0) ? "strong" : ""}" style="color:${wh && it && available(wh, it.id) < Number(l.qty || 0) ? "var(--danger)" : "inherit"}">${wh && it ? qty(available(wh, it.id)) : "—"}</td>
+          <td><select data-f="stage">${["READY", "RM"].map((st) => `<option value="${st}" ${lineStage(wh, l) === st ? "selected" : ""}>${stageLabel(st)}${wh && it ? ` (${qty(available(wh, it.id, st))})` : ""}</option>`).join("")}</select></td>
+          <td class="num ${wh && it && available(wh, it.id, lineStage(wh, l)) < Number(l.qty || 0) ? "strong" : ""}" style="color:${wh && it && available(wh, it.id, lineStage(wh, l)) < Number(l.qty || 0) ? "var(--danger)" : "inherit"}">${wh && it ? qty(available(wh, it.id, lineStage(wh, l))) : "—"}</td>
           <td><select data-f="packItemId"><option value="">Bulk / tanker (no packaging)</option>${packagingItems().map((p) => `<option value="${esc(p.id)}" ${p.id === l.packItemId ? "selected" : ""}>${esc(p.name)}${p.capacity ? ` (${qty(p.capacity)} ${esc(p.capacityUnit || "")})` : ""}</option>`).join("")}</select></td>
           <td><input data-f="packSize" type="number" step="any" min="0" value="${esc(l.packSize)}" class="num" ${l.packItemId ? "" : "disabled"} /></td>
           <td><input data-f="containers" type="number" step="1" min="0" value="${esc(l.containers)}" class="num" ${l.packItemId ? "" : "disabled"} /></td>
@@ -141,17 +148,17 @@ async function start() {
     function movementsPreview() {
       const wh = form.warehouse.value;
       const map = new Map();
-      const add = (itemId, q) => { if (!itemId || !(q > 0)) return; map.set(itemId, round((map.get(itemId) || 0) + q)); };
-      lines.forEach((l) => { add(l.itemId, Number(l.qty)); if (l.packItemId) add(l.packItemId, Number(l.containers)); });
+      const add = (itemId, q, stage = "RM") => { if (!itemId || !(q > 0)) return; const k = `${itemId}|${stage}`; map.set(k, round((map.get(k) || 0) + q)); };
+      lines.forEach((l) => { add(l.itemId, Number(l.qty), lineStage(wh, l)); if (l.packItemId) add(l.packItemId, Number(l.containers)); });
       extras.forEach((e) => add(e.itemId, Number(e.qty)));
-      return [...map.entries()].map(([itemId, q]) => ({ item: items.find((x) => x.id === itemId), qty: q, available: wh ? available(wh, itemId) : 0 }));
+      return [...map.entries()].map(([k, q]) => { const [itemId, stage] = k.split("|"); return { item: items.find((x) => x.id === itemId), stage, qty: q, available: wh ? available(wh, itemId, stage) : 0 }; });
     }
 
     function renderDeduction() {
       const wh = form.warehouse.value;
       const rows = movementsPreview();
       modal.el.querySelector("#deduction").innerHTML = !wh ? '<p class="muted">Select the dispatch warehouse.</p>' : rows.length ? `<table class="table"><thead><tr><th>Item</th><th>Type</th><th class="num">Deduct</th><th class="num">Available at ${esc(warehouseByCode(wh).name)}</th><th class="num">Balance after</th></tr></thead><tbody>
-        ${rows.map((r) => `<tr><td class="strong">${esc(r.item?.name)}</td><td>${esc(r.item?.category)}</td><td class="num">${qty(r.qty)} ${esc(r.item?.unit)}</td><td class="num">${qty(r.available)}</td><td class="num strong" style="color:${r.available - r.qty < 0 ? "var(--danger)" : "var(--success)"}">${qty(round(r.available - r.qty))}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Add products.</p>';
+        ${rows.map((r) => `<tr><td class="strong">${esc(r.item?.name)}</td><td>${esc(r.item?.category)}${r.item?.category === "Packaging" ? "" : ` · ${esc(stageLabel(r.stage))}`}</td><td class="num">${qty(r.qty)} ${esc(r.item?.unit)}</td><td class="num">${qty(r.available)}</td><td class="num strong" style="color:${r.available - r.qty < 0 ? "var(--danger)" : "var(--success)"}">${qty(round(r.available - r.qty))}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Add products.</p>';
     }
 
     function loadFromSo() {
@@ -169,6 +176,7 @@ async function start() {
       const tr = e.target.closest("tr"); const f = e.target.dataset.f; if (!tr || !f || e.target.tagName !== "SELECT") return;
       const l = lines[Number(tr.dataset.i)];
       l[f] = e.target.value;
+      if (f === "itemId") l.stage = "";
       if (f === "packItemId") {
         const p = items.find((x) => x.id === l.packItemId);
         l.packSize = p?.capacity || "";
@@ -185,6 +193,7 @@ async function start() {
         l.containers = Math.ceil(Number(l.qty || 0) / Number(l.packSize));
         tr.querySelector('[data-f="containers"]').value = l.containers;
       }
+      if (f === "qty" && !l.stage && tr.querySelector('[data-f="stage"]')) tr.querySelector('[data-f="stage"]').value = lineStage(form.warehouse.value, l);
       renderDeduction();
     });
     tbody.addEventListener("click", (e) => { if (e.target.closest("[data-rm]")) { lines.splice(Number(e.target.closest("tr").dataset.i), 1); renderLines(); } });
@@ -219,7 +228,7 @@ async function start() {
           const pack = items.find((x) => x.id === l.packItemId);
           const count = Number(l.containers);
           if (pack && (!Number.isInteger(count) || count <= 0)) throw new Error(`${it.name}: enter the number of ${pack.name} used.`);
-          return { itemId: it.id, name: it.name, unit: it.unit, category: it.category, hsn: it.hsn || "", qty: round(Number(l.qty)), batchNo: l.batchNo, soLineId: l.soLineId || "",
+          return { itemId: it.id, name: it.name, unit: it.unit, category: it.category, stage: lineStage(v.warehouse, l), hsn: it.hsn || "", qty: round(Number(l.qty)), batchNo: l.batchNo, soLineId: l.soLineId || "",
             packing: pack ? { itemId: pack.id, itemName: pack.name, size: Number(l.packSize) || null, count } : null };
         });
         if (!clean.length) throw new Error("Enter at least one product quantity.");
@@ -247,10 +256,10 @@ async function start() {
             if (!["OPEN", "PARTIALLY DISPATCHED"].includes(soData.status)) throw new Error(`Sales order is ${soData.status}.`);
           }
           const movements = [
-            ...clean.map((l) => ({ warehouse: wh.code, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: -l.qty, note: `Dispatch to ${customer.name}` })),
+            ...clean.map((l) => ({ warehouse: wh.code, stage: l.stage, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: -l.qty, note: `Dispatch to ${customer.name}` })),
             ...packaging.map((p) => ({ warehouse: wh.code, item: { id: p.itemId, name: p.name, unit: p.unit, category: "Packaging" }, qty: -p.qty, note: `Packaging for dispatch to ${customer.name}` }))
           ];
-          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
+          const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id, stage: m.stage })));
           const number = await reserveNumber(tx, "DC", { date: v.date });
           commitNumber(tx, number, ref.id);
           applyMovements(tx, stockMap, movements, { type: "OUTWARD", id: ref.id, no: number.number });
@@ -290,10 +299,10 @@ async function start() {
         let soRef = null; let soData = null;
         if (cur.soId) { soRef = doc(db, "salesOrders", cur.soId); soData = (await tx.get(soRef)).data(); }
         const movements = [
-          ...cur.lines.map((l) => ({ warehouse: cur.warehouse, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qty, note: `Cancelled ${cur.dcNo}` })),
+          ...cur.lines.map((l) => ({ warehouse: cur.warehouse, stage: l.stage, item: { id: l.itemId, name: l.name, unit: l.unit, category: l.category }, qty: l.qty, note: `Cancelled ${cur.dcNo}` })),
           ...(cur.packaging || []).map((p) => ({ warehouse: cur.warehouse, item: { id: p.itemId, name: p.name, unit: p.unit, category: "Packaging" }, qty: p.qty, note: `Cancelled ${cur.dcNo}` }))
         ];
-        const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id })));
+        const stockMap = await readStock(tx, movements.map((m) => ({ warehouse: m.warehouse, itemId: m.item.id, stage: m.stage })));
         applyMovements(tx, stockMap, movements, { type: "OUTWARD CANCEL", id: o.id, no: cur.dcNo });
         tx.update(ref, { status: "CANCELLED", cancelReason: reason, cancelledAt: serverTimestamp(), cancelledBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
         if (soRef) {

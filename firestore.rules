@@ -19,7 +19,7 @@ service cloud.firestore {
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     // The only account that may read login sessions (private access audit).
     function isSuperAdmin() { return active() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com'; }
-    function poOpenStatuses() { return ['OPEN', 'PARTIALLY RECEIVED', 'AWAITING KANTA', 'PARTIALLY INWARDED', 'COMPLETED']; }
+    function poOpenStatuses() { return ['OPEN', 'PARTIALLY RECEIVED', 'AWAITING KANTA', 'AWAITING QC', 'PARTIALLY INWARDED', 'COMPLETED']; }
 
     match /users/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;
@@ -110,6 +110,8 @@ service cloud.firestore {
       allow update: if isOperator()
         && (request.resource.data.stage != 'CANCELLED' || isAdmin())
         && (resource.data.stage != 'REJECTED' || request.resource.data.stage == 'REJECTED')
+        // only a manager / admin can release quarantined (QC pending) material into stock
+        && (resource.data.stage != 'QC PENDING' || request.resource.data.stage != 'COMPLETED' || isManager())
         && (request.resource.data.get('paymentHold', null) == resource.data.get('paymentHold', null)
             || resource.data.get('paymentHold', null) == null
             || isManager());
@@ -125,6 +127,13 @@ service cloud.firestore {
       allow read: if active();
       allow create: if isOperator() && request.resource.data.status == 'IN TRANSIT';
       allow update: if (isOperator() && request.resource.data.status == 'RECEIVED') || (isManager() && request.resource.data.status == 'CANCELLED');
+      allow delete: if false;
+    }
+    // Process / move RM → Ready (BMR optional). Posted once; only an admin can reverse it.
+    match /conversions/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.status == 'POSTED';
+      allow update: if isAdmin();
       allow delete: if false;
     }
     match /adjustments/{id} {
