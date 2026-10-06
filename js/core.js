@@ -550,31 +550,31 @@ export function logActivity(writer, { module, action, refNo = "", refId = "", su
 /* ------------------------------------------------------------------ */
 const NAV = [
   { group: "Overview", items: [
-    ["dashboard", "dashboard.html", "fa-gauge-high", "Dashboard"],
-    ["exceptions", "exceptions.html", "fa-triangle-exclamation", "Exceptions"]
+    ["dashboard", "/dashboard", "fa-gauge-high", "Dashboard"],
+    ["exceptions", "/exceptions", "fa-triangle-exclamation", "Exceptions"]
   ] },
   { group: "Purchase", items: [
-    ["po", "purchase-orders.html", "fa-file-invoice", "Purchase Orders"],
-    ["inward", "inward.html", "fa-truck-ramp-box", "Inward · GRN · Kanta"],
-    ["parties", "parties.html", "fa-address-book", "Vendors & Customers"]
+    ["po", "/purchase-orders", "fa-file-invoice", "Purchase Orders"],
+    ["inward", "/inward", "fa-truck-ramp-box", "Inward · GRN · Kanta"],
+    ["parties", "/parties", "fa-address-book", "Vendors & Customers"]
   ] },
   { group: "Sales", items: [
-    ["quotations", "quotations.html", "fa-file-signature", "Quotations"],
-    ["so", "sales-orders.html", "fa-file-contract", "Sales Orders"],
-    ["pi", "proforma.html", "fa-file-invoice-dollar", "Proforma Invoices"],
-    ["outward", "outward.html", "fa-truck-fast", "Outward / Dispatch"]
+    ["quotations", "/quotations", "fa-file-signature", "Quotations"],
+    ["so", "/sales-orders", "fa-file-contract", "Sales Orders"],
+    ["pi", "/proforma", "fa-file-invoice-dollar", "Proforma Invoices"],
+    ["outward", "/outward", "fa-truck-fast", "Outward / Dispatch"]
   ] },
   { group: "Inventory", items: [
-    ["inventory", "inventory.html", "fa-boxes-stacked", "Stock"],
-    ["transfers", "transfers.html", "fa-right-left", "Stock Transfer"],
-    ["adjustments", "adjustments.html", "fa-trash-can-arrow-up", "Write-off / Adjust"],
-    ["items", "items.html", "fa-flask", "Items & Packaging"],
-    ["warehouses", "warehouses.html", "fa-warehouse", "Warehouses"]
+    ["inventory", "/inventory", "fa-boxes-stacked", "Stock"],
+    ["transfers", "/transfers", "fa-right-left", "Stock Transfer"],
+    ["adjustments", "/adjustments", "fa-trash-can-arrow-up", "Write-off / Adjust"],
+    ["items", "/items", "fa-flask", "Items & Packaging"],
+    ["warehouses", "/warehouses", "fa-warehouse", "Warehouses"]
   ] },
   { group: "Admin", items: [
-    ["activity", "activity.html", "fa-clock-rotate-left", "Activity Log"],
-    ["access", "access.html", "fa-user-shield", "Access Audit", "superadmin"],
-    ["settings", "settings.html", "fa-gear", "Settings & Users"]
+    ["activity", "/activity", "fa-clock-rotate-left", "Activity Log"],
+    ["access", "/access", "fa-user-shield", "Access Audit", "superadmin"],
+    ["settings", "/settings", "fa-gear", "Settings & Users"]
   ] }
 ];
 
@@ -645,8 +645,9 @@ async function endSession(reason) {
 
 export async function logout(reason = "logout") {
   await endSession(typeof reason === "string" ? reason : "logout");
+  try { await fetch("api/logout.php", { method: "POST" }); } catch { /* ignore network error on logout */ }
   await signOut(auth);
-  window.location.replace("index.html");
+  window.location.replace("/");
 }
 
 // Sign out after a period of inactivity on shared office PCs.
@@ -671,12 +672,12 @@ export function initPage(pageKey, { permission = null, superAdminOnly = false } 
   return new Promise((resolve) => {
     const stop = onAuthStateChanged(auth, async (user) => {
       stop();
-      if (!user) { window.location.replace("index.html"); return; }
+      if (!user) { window.location.replace("/"); return; }
       try {
         const profileSnap = await getDoc(doc(db, "users", user.uid));
         if (!profileSnap.exists() || profileSnap.data().active !== true) {
           await signOut(auth);
-          window.location.replace("index.html?denied=1");
+          window.location.replace("/?denied=1");
           return;
         }
         state.user = user;

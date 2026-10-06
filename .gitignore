@@ -6,3 +6,9 @@ test-results/
 tests/output/
 *.log
 .firebase/
+.env
+.env.*
+!.env.example
+composer.phar
+api/data/
+vendor/

@@ -200,7 +200,7 @@ async function start() {
     const modal = openModal({
       title: d.piNo,
       size: "full",
-      body: `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${badge(statusOf(d))}<span class="muted">${esc(d.customer?.name)} · ₹${money(d.totals?.total)} · due ${fmtDate(d.dueDate)}</span>${d.soNo ? `<a href="sales-orders.html">from ${esc(d.soNo)}</a>` : ""}</div>
+      body: `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${badge(statusOf(d))}<span class="muted">${esc(d.customer?.name)} · ₹${money(d.totals?.total)} · due ${fmtDate(d.dueDate)}</span>${d.soNo ? `<a href="/sales-orders">from ${esc(d.soNo)}</a>` : ""}</div>
         ${d.statusNote ? `<div class="notice ${d.status === "PAID" ? "" : "warn"}" style="margin-bottom:14px">${esc(d.status)} by ${esc(d.statusBy?.name)} on ${fmtDateTime(d.statusAt)} — ${esc(d.statusNote)}</div>` : ""}
         <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th>HSN/SAC</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">GST</th><th class="num">Amount</th></tr></thead><tbody>
         ${d.lines.map((l) => `<tr><td class="strong">${esc(l.name)}<div class="small muted">${esc(l.description || "")}</div></td><td>${esc(l.hsn || "")}</td><td class="num">${qty(l.qty)} ${esc(l.unit)}</td><td class="num">${money(l.rate)}</td><td class="num">${l.gstRate}%</td><td class="num">${money(l.qty * l.rate)}</td></tr>`).join("")}

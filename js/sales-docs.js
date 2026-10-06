@@ -218,12 +218,12 @@ export async function startSalesPage(kind) {
     const modal = openModal({
       title: `${d[cfg.noKey]}${d.revision ? ` · Rev ${d.revision}` : ""}`,
       size: "full",
-      body: `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${badge(statusOf(d))}<span class="muted">${esc(d.customer?.name)} · ₹${money(d.totals?.total)}</span>${d.soNo ? `<a href="sales-orders.html">→ ${esc(d.soNo)}</a>` : ""}${d.quoteNo ? `<span class="muted">from ${esc(d.quoteNo)}</span>` : ""}</div>
+      body: `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">${badge(statusOf(d))}<span class="muted">${esc(d.customer?.name)} · ₹${money(d.totals?.total)}</span>${d.soNo ? `<a href="/sales-orders">→ ${esc(d.soNo)}</a>` : ""}${d.quoteNo ? `<span class="muted">from ${esc(d.quoteNo)}</span>` : ""}</div>
         ${d.closeReason ? `<div class="notice warn" style="margin-bottom:14px">${esc(st)} by ${esc(d.closedBy?.name)} on ${fmtDateTime(d.closedAt)} — ${esc(d.closeReason)}</div>` : ""}
         <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">GST</th><th class="num">Amount</th>${isQ ? "" : '<th class="num">Dispatched</th><th class="num">Pending</th><th>Progress</th>'}</tr></thead><tbody>
         ${d.lines.map((l) => `<tr><td class="strong">${esc(l.name)}<div class="small muted">${esc(l.description || "")}</div></td><td class="num">${qty(l.qty)} ${esc(l.unit)}</td><td class="num">${money(l.rate)}</td><td class="num">${l.gstRate}%</td><td class="num">${money(l.qty * l.rate)}</td>${isQ ? "" : `<td class="num">${qty(l.dispatchedQty || 0)}</td><td class="num strong">${qty(Math.max(0, round(l.qty - (l.dispatchedQty || 0))))}</td><td>${progressBar(l.dispatchedQty || 0, l.qty)}</td>`}</tr>`).join("")}
         </tbody></table></div>
-        ${isQ ? "" : `<div class="section-title">Dispatches (${outs.length})</div>${outs.length ? `<table class="table"><thead><tr><th>Challan</th><th>Date</th><th>From</th><th>Items</th><th>Invoice</th><th>Status</th></tr></thead><tbody>${outs.map((o) => `<tr><td class="strong">${esc(o.dcNo)}</td><td>${fmtDate(o.date)}</td><td>${esc(o.warehouseName)}</td><td>${o.lines.map((l) => `${esc(l.name)} ${qty(l.qty)} ${esc(l.unit)}`).join(", ")}</td><td>${esc(o.invoiceNo || "—")}</td><td>${badge(o.status)}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing dispatched yet. Use <a href="outward.html">Outward / Dispatch</a>.</p>'}`}
+        ${isQ ? "" : `<div class="section-title">Dispatches (${outs.length})</div>${outs.length ? `<table class="table"><thead><tr><th>Challan</th><th>Date</th><th>From</th><th>Items</th><th>Invoice</th><th>Status</th></tr></thead><tbody>${outs.map((o) => `<tr><td class="strong">${esc(o.dcNo)}</td><td>${fmtDate(o.date)}</td><td>${esc(o.warehouseName)}</td><td>${o.lines.map((l) => `${esc(l.name)} ${qty(l.qty)} ${esc(l.unit)}`).join(", ")}</td><td>${esc(o.invoiceNo || "—")}</td><td>${badge(o.status)}</td></tr>`).join("")}</tbody></table>` : '<p class="muted">Nothing dispatched yet. Use <a href="/outward">Outward / Dispatch</a>.</p>'}`}
         <div class="section-title">History</div>
         <ul class="timeline">${log.map((a) => `<li><time>${fmtDateTime(a.at)}</time><div><b>${esc(a.userName)}</b> · ${esc(a.summary)}</div></li>`).join("") || '<li class="muted">No history.</li>'}</ul>`,
       footer: `<button class="btn" data-close>Close</button>${buttons.join("")}<button class="btn primary" data-act="pdf"><i class="fa-solid fa-file-pdf"></i> View / Download PDF</button>`
@@ -234,7 +234,7 @@ export async function startSalesPage(kind) {
       if (act === "pdf") { showDocument(cfg.spec(d), `${safeFileName(d[cfg.noKey])}.pdf`); return; }
       if (act === "edit") { modal.close(); openEditor(d); return; }
       if (act === "convert") { startConvert(d); return; }
-      if (act === "proforma") { sessionStorage.setItem("ccpl-pi-from-so", d.id); window.location.href = "proforma.html"; return; }
+      if (act === "proforma") { sessionStorage.setItem("ccpl-pi-from-so", d.id); window.location.href = "/proforma"; return; }
       const needsReason = ["REJECTED", "CANCELLED", "SHORT CLOSED"].includes(act);
       let reason = "";
       if (act === "reopen") { if (!(await confirmDialog(`Reopen ${d[cfg.noKey]}?`))) return; }
@@ -263,7 +263,7 @@ export async function startSalesPage(kind) {
 
   function startConvert(q) {
     sessionStorage.setItem("ccpl-convert-quotation", q.id);
-    window.location.href = "sales-orders.html";
+    window.location.href = "/sales-orders";
   }
 
   await load();

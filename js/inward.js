@@ -97,7 +97,7 @@ async function start() {
   const itemsText = (r) => r.lines.map((l) => l.name).join(" ");
   const poLinks = (r) => {
     const list = [...new Map(r.lines.filter((l) => l.poId).map((l) => [l.poId, l.poNo])).entries()];
-    return list.length ? list.map(([id, no]) => `<a class="nowrap" href="purchase-orders.html?open=${esc(id)}">${esc(no)}</a>`).join("<br>") : '<span class="muted">Without PO</span>';
+    return list.length ? list.map(([id, no]) => `<a class="nowrap" href="/purchase-orders?open=${esc(id)}">${esc(no)}</a>`).join("<br>") : '<span class="muted">Without PO</span>';
   };
 
   function filtered() {
@@ -722,7 +722,7 @@ async function start() {
           const weighed = l.kantaQty !== undefined;
           const vq = weighed ? round(n(l.kantaQty) - n(l.grnQty)) : null;
           const accepted = r.stage === "COMPLETED" ? acceptedOf(l) : r.stage === "REJECTED" ? 0 : null;
-          return `<tr><td class="strong">${esc(l.name)}</td><td class="small nowrap">${l.poId ? `<a href="purchase-orders.html?open=${esc(l.poId)}">${esc(l.poNo)}</a>` : "—"}</td><td class="num">${qty(n(l.invoiceQty))} ${esc(l.unit)}</td><td class="num">${l.grnQty !== undefined ? qty(n(l.grnQty)) : "—"}</td><td class="num">${weighed ? qty(n(l.kantaQty)) : "—"}</td>
+          return `<tr><td class="strong">${esc(l.name)}</td><td class="small nowrap">${l.poId ? `<a href="/purchase-orders?open=${esc(l.poId)}">${esc(l.poNo)}</a>` : "—"}</td><td class="num">${qty(n(l.invoiceQty))} ${esc(l.unit)}</td><td class="num">${l.grnQty !== undefined ? qty(n(l.grnQty)) : "—"}</td><td class="num">${weighed ? qty(n(l.kantaQty)) : "—"}</td>
             <td class="num" style="color:${diffColor(vq)}">${vq === null ? "—" : fmtDiff(vq)}</td><td class="num" style="color:${n(l.rejectedQty) ? "var(--danger)" : "inherit"}">${qty(n(l.rejectedQty))}</td>
             <td class="num strong">${accepted === null ? "—" : qty(accepted)}</td><td class="num">${accepted !== null && l.rate ? money(accepted * l.rate) : "—"}</td></tr>`;
         }).join("")}

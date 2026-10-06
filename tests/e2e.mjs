@@ -8,7 +8,7 @@
 //   Quotation → accepted → Sales Order → dispatch from Taloja in drums (packaging stock deducted)
 //   Security: outsider / inactive / operator restrictions enforced by the rules
 import http from "node:http";
-import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { readFile, mkdir, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,7 +54,16 @@ await getAuth().createUser({ email: "outsider@evil.test", password: "Outsider#12
 /* ---------- static server ---------- */
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
 const server = http.createServer(async (req, res) => {
-  const file = path.join(ROOT, decodeURIComponent(new URL(req.url, BASE).pathname));
+  const requestUrl = new URL(req.url, BASE);
+  const requestPath = decodeURIComponent(requestUrl.pathname);
+  if (/\.html$/i.test(requestPath)) {
+    res.writeHead(301, { Location: `${requestPath.slice(0, -5)}${requestUrl.search}` });
+    res.end();
+    return;
+  }
+  const servedPath = requestPath === "/" ? "/index.html" : requestPath;
+  let file = path.join(ROOT, servedPath);
+  if (!existsSync(file) && !path.extname(servedPath)) file += ".html";
   if (!file.startsWith(ROOT) || !existsSync(file)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream" });
   res.end(await readFile(file));
@@ -80,13 +89,14 @@ page.on("pageerror", (e) => consoleErrors.push(e.message));
 /* ---------- helpers ---------- */
 const modal = () => page.locator(".modal-backdrop").last();
 async function goto(file) { await page.goto(`${BASE}/${file}`); await page.waitForSelector('body[data-loaded="1"]', { timeout: 20000 }); }
+const waitForPath = (targetPage, pathname, options) => targetPage.waitForURL((url) => url.pathname === pathname, options);
 async function login(email, password) {
   await page.goto(`${BASE}/index.html?emulator=1`);
   await page.fill("input[name=email]", email);
   await page.fill("input[name=password]", password);
   await page.click("#loginBtn");
 }
-async function logout() { await page.click("#logoutBtn"); await page.waitForURL(/index\.html/); }
+async function logout() { await page.click("#logoutBtn"); await waitForPath(page, "/"); }
 async function selectContaining(locator, text) {
   const value = await locator.evaluate((sel, t) => [...sel.options].find((o) => o.textContent.includes(t))?.value, text);
   if (value === undefined) throw new Error(`Option containing "${text}" not found`);
@@ -203,6 +213,21 @@ const lineOf = (po, name) => po.lines.find((l) => l.name.startsWith(name));
 const round = (v, dp = 3) => Math.round(v * 10 ** dp) / 10 ** dp;
 
 try {
+  /* ================= 0. Clean URL routing ================= */
+  console.log("\n0. Clean URLs & assets");
+  const htmlPages = (await readdir(ROOT)).filter((file) => file.toLowerCase().endsWith(".html"));
+  for (const file of htmlPages) {
+    const route = `/${file.slice(0, -5)}`;
+    const response = await page.request.get(`${BASE}${route}`);
+    check(response.status() === 200 && new URL(response.url()).pathname === route, `${route} serves ${file}`);
+  }
+  const legacyPage = await page.request.get(`${BASE}/dashboard.html`, { maxRedirects: 0 });
+  check(legacyPage.status() === 301 && legacyPage.headers().location === "/dashboard", "dashboard.html redirects to /dashboard");
+  for (const asset of ["/css/app.css", "/js/login.js", "/logo.png"]) {
+    const response = await page.request.get(`${BASE}${asset}`);
+    check(response.status() === 200, `${asset} loads at a clean page URL`);
+  }
+
   /* ================= 1. Security / login ================= */
   console.log("\n1. Login & security");
   await login("admin@test.ccpl", "wrong-password-1");
@@ -210,19 +235,33 @@ try {
   check((await page.textContent("#loginMessage")).includes("Incorrect"), "wrong password is rejected");
   await login("outsider@evil.test", "Outsider#12345");
   await page.waitForTimeout(1500);
-  check(page.url().includes("index.html") && (await page.textContent("#loginMessage")).includes("not authorised"), "outsider with a Firebase login but no ERP profile is refused");
+  check(new URL(page.url()).pathname === "/index" && (await page.textContent("#loginMessage")).includes("not authorised"), "outsider with a Firebase login but no ERP profile is refused");
   await login("inactive@test.ccpl", "Inactive#12345");
   await page.waitForTimeout(1500);
-  check(page.url().includes("index.html"), "deactivated user cannot sign in");
+  check(new URL(page.url()).pathname === "/index", "deactivated user cannot sign in");
   await page.goto(`${BASE}/purchase-orders.html`);
-  await page.waitForURL(/index\.html/, { timeout: 15000 });
+  await page.waitForURL((url) => ["/", "/index"].includes(url.pathname), { timeout: 15000 });
   check(true, "protected page redirects to login when signed out");
 
   await login("admin@test.ccpl", "Admin#12345");
-  await page.waitForURL(/dashboard\.html/, { timeout: 20000 });
+  await waitForPath(page, "/dashboard", { timeout: 20000 });
   await page.waitForSelector(".kpi");
   check(true, "admin signs in and reaches the dashboard");
   await page.screenshot({ path: path.join(OUT, "01-dashboard-empty.png") });
+  await page.click('.nav-link[href="/inventory"]');
+  await waitForPath(page, "/inventory");
+  await page.waitForSelector('body[data-loaded="1"]');
+  check(true, "ERP sidebar navigation opens a clean module URL");
+  await page.reload();
+  await page.waitForSelector('body[data-loaded="1"]');
+  check(new URL(page.url()).pathname === "/inventory", "clean module URL survives browser refresh");
+  await page.goBack();
+  await waitForPath(page, "/dashboard");
+  await page.waitForSelector('body[data-loaded="1"]');
+  await page.goForward();
+  await waitForPath(page, "/inventory");
+  await page.waitForSelector('body[data-loaded="1"]');
+  check(true, "browser back/forward retains clean module routes");
 
   /* ================= 2. Masters ================= */
   console.log("\n2. Masters (vendors & customers in one list, items)");
@@ -503,7 +542,7 @@ try {
   await page2.fill("input[name=email]", "manager@test.ccpl");
   await page2.fill("input[name=password]", "Manager#12345");
   await page2.click("#loginBtn");
-  await page2.waitForURL(/dashboard\.html/, { timeout: 20000 });
+  await waitForPath(page2, "/dashboard", { timeout: 20000 });
   await page2.goto(`${BASE}/purchase-orders.html`); await page2.waitForSelector('body[data-loaded="1"]');
   await goto("purchase-orders.html");
   await page.click("#newPo"); await page2.click("#newPo");
@@ -605,7 +644,7 @@ try {
   // Resolve hold (manager)
   await logout();
   await login("manager@test.ccpl", "Manager#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
   await goto("inward.html"); await page.click('[data-tab="HOLD"]');
   await page.locator(`[data-view="${rj1.id}"]`).first().click();
   await modal().locator("#resolveHold").click();
@@ -616,7 +655,7 @@ try {
   check(rj1b.stage === "REJECTED" && rj1b.paymentHold.active === false && rj1b.paymentHold.resolvedBy.name === "Test Manager" && rj1b.paymentHold.resolution.includes("returned"), "manager resolves the payment hold with a note; receipt stays rejected with zero quantity");
   await logout();
   await login("admin@test.ccpl", "Admin#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
 
   /* ================= 6e. One supplier bill across two POs + Close with Balance (190 kg example) ================= */
   console.log("\n6e. One bill → two POs (100 + 90 kg), close the second with 10 kg balance, reopen");
@@ -804,7 +843,7 @@ try {
   await page.click('[data-tab="ACCEPTED"]');
   await page.locator(`[data-view="${quote.id}"]`).first().click();
   await modal().locator('[data-act="convert"]').click();
-  await page.waitForURL(/sales-orders\.html/);
+  await waitForPath(page, "/sales-orders");
   m = modal();
   await m.locator("#saveS").waitFor();
   await m.locator("select[name=warehouse]").selectOption("TALOJA");
@@ -875,7 +914,7 @@ try {
   await goto("sales-orders.html");
   await page.locator(`[data-view="${gaSo.id}"]`).first().click();
   await modal().locator('[data-act="proforma"]').click();
-  await page.waitForURL(/proforma\.html/);
+  await waitForPath(page, "/proforma");
   m = modal();
   await m.locator("#savePi").waitFor();
   check(await m.locator("input[name=refNo]").inputValue() === "GA/PO/77" && await m.locator("input[name=paymentTerms]").inputValue() === "45 Days"
@@ -919,7 +958,7 @@ try {
   await m.locator("input[data-f=rate]").first().fill("110");
   await page.screenshot({ path: path.join(OUT, "14-so-doc-type.png") });
   await m.locator("select[name=docType]").selectOption("PI");
-  await page.waitForURL(/proforma\.html/);
+  await waitForPath(page, "/proforma");
   m = modal();
   await m.locator("#savePi").waitFor();
   check(await m.locator("select[name=customerId] option:checked").textContent().then((t) => t.includes("Pyramid")) && await m.locator("input[name=refNo]").inputValue() === "PTL/PO/991"
@@ -936,7 +975,7 @@ try {
   await m.locator("input[data-f=qty]").first().fill("3");
   await m.locator("input[data-f=rate]").first().fill("100");
   await m.locator("select[name=docType]").selectOption("SO");
-  await page.waitForURL(/sales-orders\.html/);
+  await waitForPath(page, "/sales-orders");
   m = modal();
   await m.locator("#saveS").waitFor();
   check(await m.locator("input[name=customerPoNo]").inputValue() === "BS2/77" && await m.locator("input[data-f=qty]").first().inputValue() === "3", "switching PI → SO keeps party, reference and items");
@@ -949,7 +988,7 @@ try {
   const talojaStock = await stockOf("TALOJA", "Hydrochloric Acid 33%");
   await logout();
   await login("manager@test.ccpl", "Manager#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
   await goto("warehouses.html");
   await page.click("#addWh");
   m = modal();
@@ -983,7 +1022,7 @@ try {
   check(renameLog?.summary.includes("Taloja Unit → Taloja Warehouse"), "rename recorded in the activity log");
   await logout();
   await login("admin@test.ccpl", "Admin#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
 
   /* ================= 11. Ledger & activity log ================= */
   console.log("\n11. Stock ledger & activity log");
@@ -1016,21 +1055,21 @@ try {
   check((await page.textContent("#users")).includes("store@test.ccpl"), "admin created a new user from Settings");
   await logout();
   await login("store@test.ccpl", "Store#123456");
-  await page.waitForURL(/dashboard\.html/, { timeout: 20000 });
+  await waitForPath(page, "/dashboard", { timeout: 20000 });
   check(true, "newly created user can sign in");
   await logout();
 
   /* ================= 11b. Exceptions & PDF wording ================= */
   console.log("\n11b. Exceptions");
   await login("admin@test.ccpl", "Admin#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
   await goto("exceptions.html");
   const exText = await page.textContent("#page");
   check(exText.includes("Kanta shortage / excess") && exText.includes("Apple: GRN 5 → Kanta 4.8") && exText.includes("Methanol: GRN 10,000 → Kanta 9,970"), "Exceptions lists Kanta shortages (Apple −0.2, Methanol −30)");
   check(exText.includes("Invoice qty not matching payable") && exText.includes("Stock manually adjusted") && exText.includes("Opening / existing stock"), "Exceptions lists invoice≠payable and manual stock entries");
   check(exText.includes("Payment Hold — Rejected Inward") && exText.includes("GA-INV-2") && !exText.includes("Vehicle returned; vendor will not bill"), "Exceptions lists receipts on payment hold (resolved holds drop off)");
   await page.screenshot({ path: path.join(OUT, "08-exceptions.png"), fullPage: true });
-  check(await page.locator('.nav-link[href="access.html"]').count() === 0, "Access Audit is hidden from other admins");
+  check(await page.locator('.nav-link[href="/access"]').count() === 0, "Access Audit is hidden from other admins");
   const deniedSessions = await page.evaluate(async () => {
     const { db } = await import("./js/firebase-config.js");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
@@ -1041,7 +1080,7 @@ try {
 
   console.log("\n11c. Private Access Audit (super admin only)");
   await login("rupesh.mudliar@cognizantchemical.com", "Rupesh#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
   await goto("access.html");
   let accText = await page.textContent("#page");
   const usersOk = accText.includes("Test Admin") && accText.includes("Online now") && accText.includes("Last login");
@@ -1058,7 +1097,7 @@ try {
   /* ================= 12. Role restrictions ================= */
   console.log("\n12. Role restrictions");
   await login("operator@test.ccpl", "Operator#12345");
-  await page.waitForURL(/dashboard\.html/);
+  await waitForPath(page, "/dashboard");
   await goto("purchase-orders.html");
   check(await page.locator("#newPo").count() === 0, "operator cannot see New Purchase Order");
   await goto("warehouses.html");

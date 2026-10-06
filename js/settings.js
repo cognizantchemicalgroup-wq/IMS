@@ -59,7 +59,7 @@ async function start() {
         <label class="field span-2"><span>Default proforma invoice terms</span><textarea name="piTerms" rows="5">${esc(c.piTerms)}</textarea></label>
         <div class="span-all" style="display:flex;justify-content:flex-end"><button class="btn primary" type="submit">Save company details</button></div>
       </form></div></div>
-    <div class="card"><div class="card-head"><h3>Warehouses / units</h3><a class="btn sm" href="warehouses.html"><i class="fa-solid fa-warehouse"></i> Manage warehouses</a></div>
+    <div class="card"><div class="card-head"><h3>Warehouses / units</h3><a class="btn sm" href="/warehouses"><i class="fa-solid fa-warehouse"></i> Manage warehouses</a></div>
       <div class="card-body small muted">Create, rename and edit warehouse addresses, contact person and phone on the Warehouses page.</div></div>
     <div class="card"><div class="card-head"><h3>Document numbering</h3></div><div class="card-body">
       <p class="small muted" style="margin-top:0">Set the format, digits and the next number. Tokens: <b>{SEQ}</b> running number · <b>{FY}</b> financial year (26-27) · <b>{MON}</b> month (OCT) · <b>{MM}</b> month number (10) · <b>{YY}</b> year (26) · <b>{SITE}</b> warehouse PO code.

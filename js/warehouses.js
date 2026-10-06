@@ -39,7 +39,7 @@ async function start() {
           ${w.note ? `<div style="grid-column:1/-1"><span>Note</span><b>${esc(w.note)}</b></div>` : ""}
           <div><span>Code</span><b class="mono">${esc(w.code)}</b></div><div><span>Status</span><b>${w.active === false ? "Inactive" : "Active"}</b></div>
         </div>
-        <p class="small muted" style="margin:12px 0 0">${items.length} item${items.length === 1 ? "" : "s"} in stock${items.length ? `: ${items.slice(0, 6).map((s) => `${esc(s.itemName)} ${qty(s.qty)} ${esc(s.unit)}`).join(", ")}${items.length > 6 ? "…" : ""}` : ""}. <a href="inventory.html">Open stock →</a></p>`,
+        <p class="small muted" style="margin:12px 0 0">${items.length} item${items.length === 1 ? "" : "s"} in stock${items.length ? `: ${items.slice(0, 6).map((s) => `${esc(s.itemName)} ${qty(s.qty)} ${esc(s.unit)}`).join(", ")}${items.length > 6 ? "…" : ""}` : ""}. <a href="/inventory">Open stock →</a></p>`,
       footer: `<button class="btn" data-close>Close</button>${canEdit ? '<button class="btn primary" id="editFromView"><i class="fa-solid fa-pen"></i> Edit details</button>' : ""}`
     });
     modal.el.querySelector("#editFromView")?.addEventListener("click", () => { modal.close(); edit(w); });

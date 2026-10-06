@@ -2,6 +2,7 @@
 
 Static web app (HTML + JavaScript modules) on **Firebase** (Authentication, Firestore, Storage).
 No build step: every page is a plain `.html` file with one script in `js/`.
+On Apache/Hostinger, `.htaccess` serves each existing HTML page at its extensionless URL and redirects direct `.html` requests to the clean URL. The page filenames remain unchanged.
 
 **Purpose:** the ERP runs day-to-day operations — PO, inward (invoice → GRN → Kanta), transport, rejected vehicles,
 stock, transfers, quotations, SO, proforma invoices and dispatch. **Tally remains the system for billing and

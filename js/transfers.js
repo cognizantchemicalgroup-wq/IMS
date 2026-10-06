@@ -125,7 +125,7 @@ async function start() {
     const modal = openModal({
       title: `Receive ${t.trNo} at ${warehouseByCode(t.to).name}`,
       size: "wide",
-      body: `<p class="muted">Enter what actually arrived. Any shortfall is recorded as transit loss (damaged / destroyed / leaked on the way). Material damaged after arrival should be written off from <a href="adjustments.html">Write-off / Adjust</a>.</p>
+      body: `<p class="muted">Enter what actually arrived. Any shortfall is recorded as transit loss (damaged / destroyed / leaked on the way). Material damaged after arrival should be written off from <a href="/adjustments">Write-off / Adjust</a>.</p>
         <form id="rForm"><table class="table"><thead><tr><th>Item</th><th class="num">Sent</th><th class="num">Received</th><th class="num">Loss</th><th>Loss reason</th></tr></thead><tbody>
         ${t.lines.map((l, i) => `<tr data-i="${i}"><td class="strong">${esc(l.name)}</td><td class="num">${qty(l.qtySent)} ${esc(l.unit)}</td><td><input type="number" step="any" min="0" class="num" name="rec${i}" value="${esc(l.qtySent)}" /></td><td class="num" data-loss>0</td><td><input name="why${i}" placeholder="Required if loss" /></td></tr>`).join("")}
         </tbody></table>

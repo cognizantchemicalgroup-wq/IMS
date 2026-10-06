@@ -1,0 +1,36 @@
+# CCPL ERP - Apache / Hostinger Production Configuration
+Options -Indexes
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Robots-Tag "noindex, nofollow"
+</IfModule>
+
+# Block access to hidden, environment, source, and credential files
+<FilesMatch "^\.env|composer\.(json|lock|phar)|service-account.*\.json|\.(rules|mjs|md|log)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Block access to admin and tests directories from public web
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(admin|tests)/ - [F,L]
+
+    # Canonicalize direct requests for HTML files to clean URLs.
+    RewriteCond %{THE_REQUEST} \s/+(.+?)\.html(?:[?\s]) [NC]
+    RewriteRule ^(.+)\.html$ /$1 [R=301,L,NE]
+
+    # Serve an existing HTML page when its clean URL is requested.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteCond %{REQUEST_FILENAME}.html -f
+    RewriteRule ^(.+?)/?$ $1.html [L]
+</IfModule>

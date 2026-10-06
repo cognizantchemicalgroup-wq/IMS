@@ -14,7 +14,7 @@ export const partyOption = (p, selectedId) => `<option value="${esc(p.id)}" ${p.
 
 export function openOtherType(target, draft) {
   try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ ...draft, target })); } catch { /* storage unavailable */ }
-  window.location.href = target === "PI" ? "proforma.html" : "sales-orders.html";
+  window.location.href = target === "PI" ? "/proforma" : "/sales-orders";
 }
 
 export function takeDraft(target) {
