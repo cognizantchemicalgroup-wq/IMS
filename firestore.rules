@@ -12,13 +12,34 @@ service cloud.firestore {
     function profile() { return get(profilePath()).data; }
     // get() of a missing profile fails the rule, so no separate exists() call is needed (fewer document reads per request).
     function active() { return signedIn() && profile().active == true; }
-    function hasRole(roles) { return active() && profile().role in roles; }
+    // Data entry can be paused (go-live reset / maintenance) by the super admin: /settings/maintenance.paused == true
+    // blocks every business write of everybody else. Reads, sign-in sessions and the activity log keep working.
+    function maintenancePath() { return /databases/$(database)/documents/settings/maintenance; }
+    function writable() { return !exists(maintenancePath()) || get(maintenancePath()).data.get('paused', false) != true || isSuperAdmin(); }
+    function hasRole(roles) { return active() && profile().role in roles && writable(); }
     function isAdmin() { return hasRole(['admin']); }
     function isManager() { return hasRole(['admin', 'manager']); }
     function isOperator() { return hasRole(['admin', 'manager', 'operator']); }
     function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
     // The only account that may read login sessions (private access audit).
     function isSuperAdmin() { return active() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com'; }
+    // Backup & Reset page: the super admin proves the separate reset password by writing /secure/resetGrant
+    // (checked against the stored hash below). For 30 minutes after that, the bulk delete / restore writes are allowed.
+    function grantPath() { return /databases/$(database)/documents/secure/resetGrant; }
+    function resetGranted() {
+      return isSuperAdmin() && exists(grantPath())
+        && get(grantPath()).data.uid == request.auth.uid
+        && get(grantPath()).data.at > request.time - duration.value(30, 'm');
+    }
+    // Manual PO numbers: any text the user types (prefix / series / FY / sequence), stored trimmed with single inner spaces.
+    // Uniqueness ignores letter case. Must match cleanPoNo() / poNumberKey() in js/core.js.
+    function poNoOk(no) {
+      return no is string && no.size() >= 1 && no.size() <= 60
+        && no.matches('^[A-Za-z0-9][A-Za-z0-9 /._()#&:-]*$') && !no.matches('.*  .*') && !no.matches('.* ');
+    }
+    function poKeyOf(no) { return 'PO_' + no.upper().replace('/', '%2F'); }
+    function poRegPath(key) { return /databases/$(database)/documents/poNumbers/$(key); }
+    function poPath(poId) { return /databases/$(database)/documents/purchaseOrders/$(poId); }
     function poOpenStatuses() { return ['OPEN', 'PARTIALLY RECEIVED', 'AWAITING KANTA', 'PARTIALLY INWARDED', 'COMPLETED']; }
 
     match /users/{uid} {
@@ -33,19 +54,46 @@ service cloud.firestore {
 
     match /settings/{id} {
       allow read: if active();
-      allow write: if isAdmin();
+      allow write: if isAdmin() && id != 'maintenance';
+      allow write: if id == 'maintenance' && isSuperAdmin() && request.resource.data.paused is bool;
+      allow write: if resetGranted() && id != 'maintenance';
+    }
+    // Reset password: stored only as sha256(sha256(salt:password)); nobody can read the hash.
+    match /secure/resetLock {
+      allow read: if false;
+      allow create: if isSuperAdmin() && request.resource.data.hash is string;
+      allow update: if isSuperAdmin() && request.resource.data.hash is string && resetGranted();
+      allow delete: if false;
+    }
+    match /secure/resetInfo {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin() && !exists(/databases/$(database)/documents/secure/resetLock) && request.resource.data.salt is string;
+      allow create, update: if isSuperAdmin() && request.resource.data.salt is string && resetGranted();
+      allow delete: if false;
+    }
+    match /secure/resetGrant {
+      allow read: if isSuperAdmin();
+      allow create, update: if isSuperAdmin()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.proof is string
+        && hashing.sha256(request.resource.data.proof).toHexString().lower()
+           == get(/databases/$(database)/documents/secure/resetLock).data.hash.lower();
+      allow delete: if isSuperAdmin();
     }
     // Warehouses are keyed by a permanent code, so renaming never breaks stock or history. Never deleted.
     match /warehouses/{id} {
       allow read: if active();
       allow create, update: if isManager() && request.resource.data.name is string && request.resource.data.name.size() > 0;
       allow delete: if false;
+      allow create, update: if resetGranted();
     }
     // Running document numbers; advanced inside the same transaction as the document.
     match /counters/{id} {
       allow read: if active();
       allow create, update: if isOperator() && request.resource.data.next is int && request.resource.data.next >= 1;
       allow delete: if false;
+      allow write: if resetGranted();
     }
     // Registry of every document number ever issued: a number can be created once and never changed or removed,
     // so duplicates are impossible even if a counter is set back by mistake.
@@ -53,6 +101,24 @@ service cloud.firestore {
       allow read: if active();
       allow create: if isOperator() && request.resource.data.number is string;
       allow update, delete: if false;
+      allow write: if resetGranted();
+    }
+    // Register of manual PO numbers (document id = poKeyOf(number)). Created in the same transaction as the PO and
+    // tied to it; an existing number can never be registered again (a second write would be an update, which is refused),
+    // so simultaneous saves of the same number cannot both succeed. Numbers of cancelled / deleted POs stay reserved:
+    // a registration is removed only when its own OPEN PO is renumbered in the same transaction.
+    match /poNumbers/{key} {
+      allow read: if active();
+      allow create: if isManager()
+        && request.resource.data.poId is string
+        && request.resource.data.number is string
+        && getAfter(poPath(request.resource.data.poId)).data.poNoKey == key;
+      allow delete: if isManager()
+        && existsAfter(poPath(resource.data.poId))
+        && getAfter(poPath(resource.data.poId)).data.get('poNoKey', '') != key
+        && getAfter(poPath(resource.data.poId)).data.status == 'OPEN';
+      allow update: if false;
+      allow write: if resetGranted();
     }
     // Login sessions: each user writes only their own; only the super admin can read them.
     match /sessions/{id} {
@@ -67,32 +133,47 @@ service cloud.firestore {
       allow read: if active();
       allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
       allow delete: if isAdmin();
+      allow write: if resetGranted();
     }
     match /items/{id} {
       allow read: if active();
       allow create, update: if isOperator() && request.resource.data.name is string && request.resource.data.name.size() > 0;
       allow delete: if isAdmin();
+      // restore only (the go-live reset never deletes the item master)
+      allow create, update: if resetGranted();
     }
 
     // Managers raise/close POs; operators may only update received quantities via inward/GRN.
     match /purchaseOrders/{id} {
       allow read: if active();
-      allow create: if isManager() && request.resource.data.status == 'OPEN';
-      allow update: if isManager()
+      allow create: if isManager() && request.resource.data.status == 'OPEN'
+        && poNoOk(request.resource.data.poNo)
+        && request.resource.data.poNoKey == poKeyOf(request.resource.data.poNo)
+        && getAfter(poRegPath(request.resource.data.poNoKey)).data.poId == id;
+      allow update: if (isManager()
+          && ((request.resource.data.poNo == resource.data.poNo
+               && request.resource.data.get('poNoKey', null) == resource.data.get('poNoKey', null))
+            || (resource.data.status == 'OPEN'
+               && poNoOk(request.resource.data.poNo)
+               && request.resource.data.poNoKey == poKeyOf(request.resource.data.poNo)
+               && getAfter(poRegPath(request.resource.data.poNoKey)).data.poId == id)))
         || (isOperator() && onlyChanges(['lines', 'status', 'updatedAt'])
             && request.resource.data.status in poOpenStatuses()
             && resource.data.status in poOpenStatuses());
       allow delete: if isAdmin();
+      allow write: if resetGranted();
     }
     match /quotations/{id} {
       allow read: if active();
       allow create, update: if isManager();
       allow delete: if isAdmin();
+      allow write: if resetGranted();
     }
     match /proformaInvoices/{id} {
       allow read: if active();
       allow create, update: if isManager();
       allow delete: if isAdmin();
+      allow write: if resetGranted();
     }
     match /salesOrders/{id} {
       allow read: if active();
@@ -101,6 +182,7 @@ service cloud.firestore {
         || (isOperator() && onlyChanges(['lines', 'status', 'updatedAt'])
             && request.resource.data.status in ['OPEN', 'PARTIALLY DISPATCHED', 'COMPLETED']);
       allow delete: if isAdmin();
+      allow write: if resetGranted();
     }
 
     // Receipts: a rejected vehicle stays rejected, and once a payment hold exists only a manager/admin can change it.
@@ -114,24 +196,36 @@ service cloud.firestore {
             || resource.data.get('paymentHold', null) == null
             || isManager());
       allow delete: if false;
+      allow write: if resetGranted();
     }
     match /outwards/{id} {
       allow read: if active();
       allow create: if isOperator() && request.resource.data.status == 'POSTED';
       allow update: if isAdmin();
       allow delete: if false;
+      allow write: if resetGranted();
     }
     match /transfers/{id} {
       allow read: if active();
       allow create: if isOperator() && request.resource.data.status == 'IN TRANSIT';
       allow update: if (isOperator() && request.resource.data.status == 'RECEIVED') || (isManager() && request.resource.data.status == 'CANCELLED');
       allow delete: if false;
+      allow write: if resetGranted();
     }
     match /adjustments/{id} {
       allow read: if active();
       allow create: if isManager() && request.resource.data.status == 'POSTED';
       allow update: if isAdmin();
       allow delete: if false;
+      allow write: if resetGranted();
+    }
+    // Process RM → Ready (posted, can be reversed once).
+    match /conversions/{id} {
+      allow read: if active();
+      allow create: if isOperator() && request.resource.data.status == 'POSTED';
+      allow update: if isOperator() && resource.data.status == 'POSTED' && request.resource.data.status == 'REVERSED';
+      allow delete: if false;
+      allow write: if resetGranted();
     }
 
     // Stock balances: never negative, never deleted.
@@ -139,17 +233,21 @@ service cloud.firestore {
       allow read: if active();
       allow create, update: if isOperator() && request.resource.data.qty is number && request.resource.data.qty >= 0;
       allow delete: if false;
+      allow write: if resetGranted();
     }
-    // Stock ledger and activity log are append-only: no one (not even admin) can edit or delete.
+    // Stock ledger and activity log are append-only: no one (not even admin) can edit or delete —
+    // except the super admin's password-confirmed reset / restore on the Backup & Reset page.
     match /stockLedger/{id} {
       allow read: if active();
       allow create: if isOperator() && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
       allow update, delete: if false;
+      allow write: if resetGranted();
     }
     match /activity/{id} {
       allow read: if active();
       allow create: if active() && request.resource.data.uid == request.auth.uid && request.resource.data.at == request.time;
       allow update, delete: if false;
+      allow write: if resetGranted();
     }
 
     // Everything else (including the old inward/kanta/grn/stock collections) is locked.

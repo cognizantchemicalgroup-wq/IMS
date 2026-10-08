@@ -1,14 +1,14 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can,
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
-  reserveNumber, commitNumber, warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES,
-  OPEN_PO_STATUSES, normalizeReceipt, PO_SERIES, formatNumber, counterId, numberPeriodLabel, accountsBadge, isOnHold, receiptStageLabel,
+  warehouseByCode, warehouseOptions, deriveOrderStatus, progressBar, exportExcel, STATE_CODES,
+  OPEN_PO_STATUSES, normalizeReceipt, PO_SERIES, cleanPoNo, poNumberKey, poNoProblem, PO_NO_DUPLICATE_MSG, PO_NO_NONE_MSG, PO_NO_MAX, accountsBadge, isOnHold, receiptStageLabel,
   TRANSPORT_MODES, HOLD_TEXT, CLOSED_PO_STATUSES, poLineQty, fmtDiff, diffColor, acceptedOf, isServicePo, isServiceItem,
   partyTerms, termsDatalist
 } from "./core.js";
 import { createLineEditor } from "./line-editor.js";
 import { poSpec, showDocument, safeFileName } from "./pdf.js";
-import { arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const n = (v) => Number(v) || 0;
 
@@ -77,7 +77,7 @@ async function start() {
       <div class="card-head"><div class="toolbar"><input class="input search" id="search" placeholder="Search PO no, vendor, item…" />
         <select class="input" id="whFilter"><option value="">All delivery locations</option>${warehouseOptions("", { includeBlank: false })}</select>
         <select class="input" id="typeFilter"><option value="">Goods & Service</option><option value="GOODS">Goods POs</option><option value="SERVICE">Service POs</option></select>
-        <select class="input" id="seriesFilter"><option value="">All PO series</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div><span class="small muted" id="count"></span></div>
+        <select class="input" id="seriesFilter" hidden><option value="">All PO series</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("")}</select></div><span class="small muted" id="count"></span></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>PO No.</th><th>Date</th><th>Vendor</th><th>Deliver To</th><th>Items</th><th class="num">Value (₹)</th><th>Received</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     </div>`;
 
@@ -124,6 +124,7 @@ async function start() {
       listCollection("parties"),
       listCollection("items")
     ]);
+    page.querySelector("#seriesFilter").hidden = !pos.some((p) => p.series);
     render();
   }
 
@@ -167,8 +168,11 @@ async function start() {
       size: "full",
       body: `<form id="poForm" novalidate>
         <div class="form-grid">
-          ${editing ? `<label class="field"><span>PO Series</span><input readonly value="${esc(PO_SERIES[po.series]?.label || "—")} · ${esc(po.poNo)}" /><small class="help">The PO number never changes when a PO is edited.</small></label>`
-            : `<label class="field"><span>PO Series <b class="req">*</b></span><select name="series"><option value="">Select series…</option>${Object.entries(PO_SERIES).map(([k, v]) => `<option value="${k}" ${duplicate && po.series === k ? "selected" : ""}>${esc(v.label)} — e.g. ${esc(v.example)}</option>`).join("")}</select><small class="help" data-nextno>The number is assigned when the PO is saved.</small></label>`}
+          <label class="field span-2"><span>PO Number <b class="req">*</b></span>
+            <div style="display:flex;gap:8px"><input name="poNo" maxlength="${PO_NO_MAX}" autocomplete="off" spellcheck="false" value="${esc(editing ? po.poNo : "")}" placeholder="Type the full PO number, e.g. CCPL/PH/001/26-27" style="flex:1" />
+            ${editing ? "" : '<button class="btn" type="button" id="useLastPo" disabled title="Copies only the last PO number into this field so you can edit it. Nothing else is copied."><i class="fa-solid fa-clock-rotate-left"></i> Use last PO no.</button>'}</div>
+            <small class="help" data-lastpo>${editing ? "You can change the number; it must stay unique." : "Checking the last saved PO number…"}</small>
+            <small class="help" data-pocheck role="alert" style="color:var(--danger)"></small></label>
           ${editing ? `<label class="field"><span>PO Type</span><input readonly value="${isServicePo(po) ? "Service PO" : "Goods PO"}" /></label>`
             : `<label class="field"><span>PO Type <b class="req">*</b></span><select name="poType"><option value="GOODS" ${isServicePo(po) ? "" : "selected"}>Goods PO (material inward, GRN, Kanta)</option><option value="SERVICE" ${isServicePo(po) ? "selected" : ""}>Service PO (transport / other services — no inward)</option></select></label>`}
           <label class="field span-2"><span>Vendor <b class="req">*</b></span><select name="vendorId" required><option value="">Select vendor…</option>${vendors.filter((v) => v.active !== false || v.id === po.vendor?.id).sort((a, b) => a.name.localeCompare(b.name)).map((v) => `<option value="${esc(v.id)}" ${v.id === po.vendor?.id ? "selected" : ""}>${esc(v.name)}${v.gstin ? ` · ${esc(v.gstin)}` : ""}</option>`).join("")}</select></label>
@@ -219,23 +223,37 @@ async function start() {
       if (terms) form.paymentTerms.value = terms;
       setTaxType();
     });
-    form.warehouse.addEventListener("change", () => { form.destination.value = warehouseByCode(form.warehouse.value).destination || form.destination.value; showNext(); });
-    // Preview of the next number in the chosen series (the final number is assigned inside the save transaction).
-    const showNext = async () => {
-      const hint = form.querySelector("[data-nextno]");
-      if (!hint) return;
-      const s = PO_SERIES[form.series.value];
-      if (!s) { hint.textContent = "The number is assigned when the PO is saved."; return; }
-      const date = form.date.value || isoDate();
+    form.warehouse.addEventListener("change", () => { form.destination.value = warehouseByCode(form.warehouse.value).destination || form.destination.value; });
+    // PO number: manual entry; the last saved PO number (most recently CREATED, not the highest) is offered only as an editable reference.
+    const lastHint = form.querySelector("[data-lastpo]");
+    const checkHint = form.querySelector("[data-pocheck]");
+    const ownKey = editing ? poNumberKey(po.poNo) : "";
+    if (!editing) {
+      getDocs(query(collection(db, "purchaseOrders"), orderBy("createdAt", "desc"), limit(1))).then((snap) => {
+        const last = snap.docs[0]?.data();
+        const btn = modal.el.querySelector("#useLastPo");
+        if (!last?.poNo) { lastHint.textContent = PO_NO_NONE_MSG; return; }
+        lastHint.innerHTML = `Last saved PO: <b>${esc(last.poNo)}</b> (created ${esc(fmtDateTime(last.createdAt))}${last.createdBy?.name ? ` by ${esc(last.createdBy.name)}` : ""}). Use it as a reference and edit any part — prefix, series, FY or sequence.`;
+        btn.disabled = false;
+        btn.addEventListener("click", () => { form.poNo.value = last.poNo; form.poNo.focus(); form.poNo.setSelectionRange(last.poNo.length, last.poNo.length); checkPoNo(); });
+      }).catch(() => { lastHint.textContent = "Could not load the last PO number. Enter the PO number."; });
+    }
+    let checkSeq = 0;
+    const checkPoNo = async () => {
+      const seq = ++checkSeq;
+      const value = form.poNo.value;
+      if (!cleanPoNo(value)) { checkHint.textContent = ""; return; }
+      const problem = poNoProblem(value);
+      if (problem) { checkHint.textContent = problem; return; }
+      if (poNumberKey(value) === ownKey) { checkHint.textContent = ""; return; }
       try {
-        const snap = await getDoc(doc(db, "counters", counterId(s.type, date)));
-        const next = snap.exists() ? Number(snap.data().next) || 1 : 1;
-        hint.textContent = `Next ${s.label} number (${numberPeriodLabel(s.type, date)}): ${formatNumber(s.type, next, { date, site: warehouseByCode(form.warehouse.value).docCode })} — confirmed when saved.`;
-      } catch { hint.textContent = "The number is assigned when the PO is saved."; }
+        const taken = (await getDoc(doc(db, "poNumbers", poNumberKey(value)))).exists();
+        if (seq === checkSeq) checkHint.textContent = taken ? PO_NO_DUPLICATE_MSG : "";
+      } catch { if (seq === checkSeq) checkHint.textContent = ""; }
     };
-    form.series?.addEventListener("change", showNext);
-    form.date.addEventListener("change", showNext);
-    showNext();
+    let checkTimer;
+    form.poNo.addEventListener("input", () => { clearTimeout(checkTimer); checkHint.textContent = ""; checkTimer = setTimeout(checkPoNo, 350); });
+    form.poNo.addEventListener("blur", checkPoNo);
     setTaxType();
 
     modal.el.querySelector("#savePo").addEventListener("click", async (event) => {
@@ -243,7 +261,8 @@ async function start() {
       const vendor = vendorOf();
       let lines;
       try {
-        if (!editing && !PO_SERIES[values.series]) throw new Error("Select the PO series (PH or Monthly).");
+        const poProblem = poNoProblem(values.poNo);
+        if (poProblem) throw new Error(poProblem);
         if (!vendor) throw new Error("Select a vendor.");
         if (!values.date) throw new Error("Select the PO date.");
         if (!values.warehouse) throw new Error("Select the delivery location.");
@@ -265,35 +284,62 @@ async function start() {
         itemIds: [...new Set(lines.map((l) => l.itemId))],
         updatedAt: serverTimestamp()
       };
+      const poNo = cleanPoNo(values.poNo);
+      const key = poNumberKey(poNo);
+      const by = { uid: state.user.uid, name: state.profile.name || state.user.email };
       const done = busy(event.currentTarget);
       try {
+        // The registry document /poNumbers/{key} is read and created inside the transaction; firestore.rules also refuse a
+        // second registration of the same key, so simultaneous saves of one number cannot both succeed.
         const saved = await runTransaction(db, async (tx) => {
+          const keyRef = doc(db, "poNumbers", key);
           if (editing) {
             const ref = doc(db, "purchaseOrders", po.id);
             const snap = await tx.get(ref);
             const cur = snap.data();
             if (cur.status !== "OPEN" || cur.lines.some((l) => (l.invoicedQty || 0) > 0)) throw new Error("This PO already has material inward against it and can no longer be edited. Close it with balance and raise a new PO instead.");
-            data.refNo = values.refNo || cur.poNo;
+            const oldKey = cur.poNoKey || poNumberKey(cur.poNo);
+            const renumber = key !== oldKey;
+            if (renumber && (await tx.get(keyRef)).exists()) throw new Error(PO_NO_DUPLICATE_MSG);
+            const oldKeyRef = doc(db, "poNumbers", oldKey);
+            const oldReg = renumber && cur.poNoKey ? await tx.get(oldKeyRef) : null;
+            data.poNo = renumber ? poNo : cur.poNo; // same number (any case / spacing) → kept exactly as saved
+            data.poNoKey = renumber ? key : cur.poNoKey || null;
+            if (!data.poNoKey) delete data.poNoKey;
+            data.refNo = values.refNo && values.refNo !== cur.poNo ? values.refNo : data.poNo;
             // keep rejected-vehicle history of unchanged lines
             data.lines = data.lines.map((l) => ({ ...l, rejectedQty: n(cur.lines.find((x) => x.lineId === l.lineId)?.rejectedQty) }));
+            if (renumber) {
+              tx.set(keyRef, { number: poNo, poId: ref.id, at: serverTimestamp(), by });
+              // The old number is released only when this PO owned it (it was never used by another PO).
+              if (oldReg?.exists() && oldReg.data().poId === ref.id) tx.delete(oldKeyRef);
+            }
             tx.update(ref, data);
-            logActivity(tx, { module: "Purchase Orders", action: "UPDATE", refId: ref.id, refNo: cur.poNo, summary: `Edited PO ${cur.poNo} · ${vendor.name} · ₹${money(totals.total)}` });
-            return { id: ref.id, poNo: cur.poNo };
+            logActivity(tx, { module: "Purchase Orders", action: "UPDATE", refId: ref.id, refNo: data.poNo, summary: `Edited PO ${data.poNo}${renumber ? ` (PO number changed from ${cur.poNo})` : ""} · ${vendor.name} · ₹${money(totals.total)}` });
+            return { id: ref.id, poNo: data.poNo };
           }
           const ref = doc(collection(db, "purchaseOrders"));
-          const series = PO_SERIES[values.series];
-          const number = await reserveNumber(tx, series.type, { date: values.date, site: wh.docCode });
-          commitNumber(tx, number, ref.id);
-          tx.set(ref, { ...data, poType: values.poType === "SERVICE" ? "SERVICE" : "GOODS", poNo: number.number, series: values.series, refNo: values.refNo || number.number, status: "OPEN", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
-          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: number.number, summary: `Created ${values.poType === "SERVICE" ? "Service PO" : "PO"} ${number.number} (${series.label}) · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
-          return { id: ref.id, poNo: number.number };
+          if ((await tx.get(keyRef)).exists()) throw new Error(PO_NO_DUPLICATE_MSG);
+          tx.set(keyRef, { number: poNo, poId: ref.id, at: serverTimestamp(), by });
+          tx.set(ref, { ...data, poType: values.poType === "SERVICE" ? "SERVICE" : "GOODS", poNo, poNoKey: key, refNo: values.refNo || poNo, status: "OPEN", createdAt: serverTimestamp(), createdBy: by });
+          logActivity(tx, { module: "Purchase Orders", action: "CREATE", refId: ref.id, refNo: poNo, summary: `Created ${values.poType === "SERVICE" ? "Service PO" : "PO"} ${poNo} · ${vendor.name} · ${lines.map((l) => `${l.name} ${qty(l.qty)} ${l.unit}`).join(", ")} · ₹${money(totals.total)}` });
+          return { id: ref.id, poNo };
         });
         toast(`${saved.poNo} saved.`, "ok");
         modal.close();
         await load();
         const fresh = pos.find((p) => p.id === saved.id);
         if (fresh && !editing) showDocument(poSpec(fresh), `${safeFileName(fresh.poNo)}.pdf`);
-      } catch (error) { reportError(error); } finally { done(); }
+      } catch (error) {
+        // A rules rejection of the registry write means another user saved the same number a moment earlier.
+        const taken = error.message === PO_NO_DUPLICATE_MSG
+          || (["permission-denied", "already-exists", "aborted"].includes(error.code) && await getDoc(doc(db, "poNumbers", key)).then((d) => d.exists() && (!editing || d.data().poId !== po.id), () => false));
+        if (taken) {
+          checkHint.textContent = PO_NO_DUPLICATE_MSG;
+          toast(PO_NO_DUPLICATE_MSG, "error");
+          form.poNo.focus();
+        } else reportError(error);
+      } finally { done(); }
     });
   }
 
@@ -334,7 +380,7 @@ async function start() {
           <div><span>PO Date</span><b>${fmtDate(po.date)}</b></div><div><span>Payment Terms</span><b>${esc(po.paymentTerms || "—")}</b></div>
           <div><span>Expected ${service ? "Completion" : "Delivery"}</span><b>${fmtDate(po.expectedDate)}</b></div><div><span>Created By</span><b>${esc(po.createdBy?.name || "—")}</b></div>
           <div><span>Vendor GSTIN</span><b>${esc(po.vendor?.gstin || "—")}</b></div><div><span>Tax</span><b>${po.intraState ? "CGST + SGST" : "IGST"}</b></div>
-          <div><span>PO Series · Type</span><b>${esc(PO_SERIES[po.series]?.label || "—")} · ${service ? "Service" : "Goods"}</b></div>${service ? "" : `<div><span>Transport cost (internal, not on PO)</span><b>₹${money(transportTotal)}</b></div>`}
+          <div><span>${po.series ? "PO Series · Type" : "PO Type"}</span><b>${po.series ? `${esc(PO_SERIES[po.series]?.label || po.series)} · ` : ""}${service ? "Service" : "Goods"}</b></div>${service ? "" : `<div><span>Transport cost (internal, not on PO)</span><b>₹${money(transportTotal)}</b></div>`}
         </div>
         ${onHold.length ? `<div class="notice error" style="margin-bottom:14px"><i class="fa-solid fa-hand"></i><div><b>${HOLD_TEXT}</b> — ${onHold.map((r) => `${esc(r.geNo)} (invoice ${esc(r.invoiceNo)}${r.stage === "COMPLETED" ? ", rejected quantity only" : ""})`).join(", ")}. Rejected quantity is not counted as received; the PO quantity stays pending. Other receipts on this PO are not affected.</div></div>` : ""}
         ${service ? `<div class="section-title">Services ordered</div>

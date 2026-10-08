@@ -63,7 +63,7 @@ async function start() {
     <div class="card"><div class="card-head"><h3>Warehouses / units</h3><a class="btn sm" href="warehouses.html"><i class="fa-solid fa-warehouse"></i> Manage warehouses</a></div>
       <div class="card-body small muted">Create, rename and edit warehouse addresses, contact person and phone on the Warehouses page.</div></div>
     <div class="card"><div class="card-head"><h3>Document numbering</h3></div><div class="card-body">
-      <p class="small muted" style="margin-top:0">Set the format, digits and the next number. Tokens: <b>{SEQ}</b> running number · <b>{FY}</b> financial year (26-27) · <b>{MON}</b> month (OCT) · <b>{MM}</b> month number (10) · <b>{YY}</b> year (26) · <b>{SITE}</b> warehouse PO code.
+      <p class="small muted" style="margin-top:0">Purchase order numbers are typed manually on each PO. Set the format, digits and the next number. Tokens: <b>{SEQ}</b> running number · <b>{FY}</b> financial year (26-27) · <b>{MON}</b> month (OCT) · <b>{MM}</b> month number (10) · <b>{YY}</b> year (26) · <b>{SITE}</b> warehouse PO code.
       A format with <b>{MON}</b> or <b>{MM}</b> restarts at 1 every month (e.g. <span class="mono">CCPL/{MON} {YY}/{SEQ}</span> → <span class="mono">CCPL/OCT 26/01</span>, then <span class="mono">CCPL/NOV 26/01</span>); other formats restart every financial year.
       "Next number" applies to the current period shown. Numbers are issued only when a document is saved and never twice — if a number is already used, the next free one is issued.</p>
       <table class="table"><thead><tr><th>Document</th><th style="min-width:220px">Format</th><th class="num" style="width:90px">Digits</th><th>Period</th><th class="num" style="width:120px">Next number</th><th>Next will be</th><th></th></tr></thead><tbody id="numRows"></tbody></table></div></div>` : `
@@ -179,7 +179,8 @@ async function start() {
   const today = isoDate();
   const renderNums = async () => {
     const counters = await listCollection("counters");
-    page.querySelector("#numRows").innerHTML = Object.keys(NUMBER_FORMATS).map((k) => {
+    // PO numbers are typed manually on each PO (see Purchase Orders), so the PO series have no counter here.
+    page.querySelector("#numRows").innerHTML = Object.keys(NUMBER_FORMATS).filter((k) => !["POPH", "POM"].includes(k)).map((k) => {
       const format = numberFormatOf(k);
       const pad = numberPadOf(k);
       const next = counters.find((x) => x.id === `${k}_${numberPeriod(k, today, format)}`)?.next || 1;

@@ -1,6 +1,15 @@
 # CCPL ERP - API Security Configuration
 Options -Indexes
 
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set Cache-Control "private, no-store, max-age=0"
+    Header always set X-Robots-Tag "noindex, nofollow, noarchive"
+</IfModule>
+
 # Protect sensitive files
 <FilesMatch "(\.env.*|\.json|config\.local\.php)$">
     <IfModule mod_authz_core.c>
@@ -11,7 +20,7 @@ Options -Indexes
     </IfModule>
 </FilesMatch>
 
-# Only allow direct execution of specific endpoint scripts
+# Library files are never executed directly; only the endpoint scripts (login, logout, file, storage-admin) are.
 <FilesMatch "^(config|firebase|mailer|otp-service)\.php$">
     <IfModule mod_authz_core.c>
         Require all denied

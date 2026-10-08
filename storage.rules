@@ -1,17 +1,36 @@
 rules_version = '2';
+// CCPL ERP Storage rules. Every file is private: browsers may upload attachments, but nobody can read, list or
+// create download links from the browser. Files are opened only through api/file.php, which checks the user's
+// Firebase sign-in and active ERP profile on every request (backups: super admin only).
 service firebase.storage {
   match /b/{bucket}/o {
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
     function activeUser() {
-      return request.auth != null
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.active == true;
+      return request.auth != null && profile().active == true;
+    }
+    function superAdmin() {
+      return activeUser() && request.auth.token.email == 'rupesh.mudliar@cognizantchemical.com';
+    }
+    function notPaused() {
+      return !firestore.exists(/databases/(default)/documents/settings/maintenance)
+        || firestore.get(/databases/(default)/documents/settings/maintenance).data.get('paused', false) != true;
     }
     function validDocument() {
       return request.resource.size <= 10 * 1024 * 1024
         && request.resource.contentType.matches('application/(pdf|msword|vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document|vnd\\.ms-excel|vnd\\.openxmlformats-officedocument\\.spreadsheetml\\.sheet)|image/(jpeg|png)');
     }
     match /CCPL-IMS/{folder}/{docId}/{fileName} {
-      allow read: if activeUser();
-      allow create: if activeUser() && validDocument();
+      allow read: if false;
+      allow create: if activeUser() && profile().role in ['admin', 'manager', 'operator'] && notPaused() && validDocument();
+      allow update, delete: if false;
+    }
+    // Backups (JSON written by the super admin's browser; attachment copies are written by the server).
+    match /backups/{fileName} {
+      allow list: if superAdmin();
+      allow get: if false;
+      allow create: if superAdmin() && request.resource.contentType == 'application/json' && request.resource.size <= 200 * 1024 * 1024;
       allow update, delete: if false;
     }
     match /{allPaths=**} {

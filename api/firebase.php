@@ -86,7 +86,7 @@ class FirebaseService {
      * Keeps temporary auth tokens strictly on the server; does not establish client session.
      */
     public static function validateCredentials(string $email, string $password): array {
-        $apiKey = env('FIREBASE_API_KEY', '');
+        $apiKey = env('FIREBASE_API_KEY', 'AIzaSyASaR4XRhIgrSMAgvHGaLpxfCKMKvDLLro');
         $url = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=" . urlencode($apiKey);
 
         $payload = json_encode([
@@ -144,66 +144,141 @@ class FirebaseService {
         return ['valid' => false, 'error' => 'Incorrect email or password.'];
     }
 
+    private static ?string $datastoreToken = null;
+
+    /** OAuth access token of the service account for the given scope (cached per request). */
+    public static function accessToken(string $scope = 'https://www.googleapis.com/auth/datastore'): string {
+        if ($scope === 'https://www.googleapis.com/auth/datastore' && self::$datastoreToken !== null) {
+            return self::$datastoreToken;
+        }
+        $creds = new ServiceAccountCredentials([$scope], self::getServiceAccountData());
+        $tokenInfo = $creds->fetchAuthToken();
+        if (empty($tokenInfo['access_token'])) {
+            throw new RuntimeException('Could not obtain an access token.');
+        }
+        if ($scope === 'https://www.googleapis.com/auth/datastore') {
+            self::$datastoreToken = $tokenInfo['access_token'];
+        }
+        return $tokenInfo['access_token'];
+    }
+
+    public static function projectId(): string {
+        return self::getServiceAccountData()['project_id'] ?? env('FIREBASE_PROJECT_ID', 'ccpl-ims');
+    }
+
+    /** Converts one Firestore REST value to PHP. Timestamps become Unix seconds (float). */
+    private static function decodeValue(array $val): mixed {
+        if (array_key_exists('stringValue', $val)) return $val['stringValue'];
+        if (array_key_exists('booleanValue', $val)) return (bool)$val['booleanValue'];
+        if (array_key_exists('integerValue', $val)) return (int)$val['integerValue'];
+        if (array_key_exists('doubleValue', $val)) return (float)$val['doubleValue'];
+        if (array_key_exists('nullValue', $val)) return null;
+        if (array_key_exists('timestampValue', $val)) {
+            $ts = strtotime($val['timestampValue']);
+            return $ts === false ? null : (float)$ts;
+        }
+        if (isset($val['mapValue'])) {
+            $out = [];
+            foreach (($val['mapValue']['fields'] ?? []) as $k => $v) $out[$k] = self::decodeValue($v);
+            return $out;
+        }
+        if (isset($val['arrayValue'])) {
+            return array_map([self::class, 'decodeValue'], $val['arrayValue']['values'] ?? []);
+        }
+        return reset($val);
+    }
+
     /**
-     * Fetch user profile from Firestore (/users/{uid}) using OAuth2 Datastore token
+     * Reads one Firestore document with the service account (bypasses rules — callers must authorise first).
+     * $path like "users/abc". Returns plain fields, or null when missing / on error.
      */
-    public static function getUserProfile(string $uid): ?array {
+    public static function getDocument(string $path): ?array {
         try {
-            $sa = self::getServiceAccountData();
-            $projectId = $sa['project_id'] ?? env('FIREBASE_PROJECT_ID', 'ccpl-ims');
-
-            $creds = new ServiceAccountCredentials(['https://www.googleapis.com/auth/datastore'], $sa);
-            $tokenInfo = $creds->fetchAuthToken();
-            if (empty($tokenInfo['access_token'])) {
-                error_log("Could not obtain datastore access token.");
-                return null;
-            }
-            $accessToken = $tokenInfo['access_token'];
-
-            $url = "https://firestore.googleapis.com/v1/projects/{$projectId}/databases/(default)/documents/users/" . urlencode($uid);
+            $segments = array_map('rawurlencode', explode('/', $path));
+            $url = 'https://firestore.googleapis.com/v1/projects/' . self::projectId() . '/databases/(default)/documents/' . implode('/', $segments);
             $ch = curl_init($url);
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_HTTPHEADER => [
-                    "Authorization: Bearer {$accessToken}",
-                    "Accept: application/json"
-                ],
+                CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . self::accessToken(), 'Accept: application/json'],
                 CURLOPT_TIMEOUT => 8,
             ]);
             $res = curl_exec($ch);
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
-
             if ($httpCode !== 200 || !$res) {
                 return null;
             }
-
             $doc = json_decode($res, true);
-            if (empty($doc['fields'])) {
-                return null;
+            if (!is_array($doc) || !isset($doc['fields'])) {
+                return is_array($doc) && isset($doc['name']) ? [] : null;
             }
-
-            // Convert Firestore format to plain associative array
-            $profile = [];
-            foreach ($doc['fields'] as $key => $val) {
-                if (isset($val['stringValue'])) {
-                    $profile[$key] = $val['stringValue'];
-                } elseif (isset($val['booleanValue'])) {
-                    $profile[$key] = (bool)$val['booleanValue'];
-                } elseif (isset($val['integerValue'])) {
-                    $profile[$key] = (int)$val['integerValue'];
-                } elseif (isset($val['doubleValue'])) {
-                    $profile[$key] = (float)$val['doubleValue'];
-                } else {
-                    $profile[$key] = reset($val);
-                }
-            }
-
-            return $profile;
+            $out = [];
+            foreach ($doc['fields'] as $key => $val) $out[$key] = self::decodeValue($val);
+            return $out;
         } catch (\Throwable $e) {
-            error_log("Firestore getUserProfile error: " . $e->getMessage());
+            error_log("Firestore getDocument({$path}) error: " . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * Fetch user profile from Firestore (/users/{uid})
+     */
+    public static function getUserProfile(string $uid): ?array {
+        $profile = self::getDocument('users/' . $uid);
+        return $profile ?: null;
+    }
+
+    /**
+     * Authenticates an API request: "Authorization: Bearer <Firebase ID token>" of a signed-in user whose
+     * /users/{uid} profile is active. Ends the request with 401/403 otherwise.
+     * Returns ['uid' => ..., 'email' => ..., 'profile' => [...]].
+     */
+    public static function requireActiveUser(): array {
+        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+        if (!preg_match('/^Bearer\s+(\S+)$/i', $header, $m)) {
+            json_error('Sign in required.', 401);
+        }
+        try {
+            $token = self::getAuth()->verifyIdToken($m[1], true);
+        } catch (\Throwable $e) {
+            json_error('Your session has expired. Sign in again.', 401);
+        }
+        $uid = (string)$token->claims()->get('sub');
+        $email = strtolower((string)($token->claims()->get('email') ?? ''));
+        $profile = self::getUserProfile($uid);
+        if (!$profile || ($profile['active'] ?? false) !== true) {
+            json_error('This account is not authorised for the CCPL ERP, or it has been deactivated.', 403);
+        }
+        return ['uid' => $uid, 'email' => $email, 'profile' => $profile];
+    }
+
+    public static function isSuperAdmin(array $user): bool {
+        return $user['email'] === strtolower(env('SUPER_ADMIN_EMAIL', 'rupesh.mudliar@cognizantchemical.com'));
+    }
+
+    /**
+     * True when the super admin has a valid reset grant: /secure/resetGrant written by this user in the last
+     * 30 minutes whose proof matches the stored reset-password hash (same check as firestore.rules).
+     */
+    public static function hasResetGrant(array $user): bool {
+        if (!self::isSuperAdmin($user)) return false;
+        $grant = self::getDocument('secure/resetGrant');
+        $lock = self::getDocument('secure/resetLock');
+        if (!$grant || !$lock || empty($grant['proof']) || empty($lock['hash'])) return false;
+        if (($grant['uid'] ?? '') !== $user['uid']) return false;
+        $at = $grant['at'] ?? null;
+        if (!is_float($at) || $at < time() - 30 * 60) return false;
+        return hash_equals(strtolower((string)$lock['hash']), hash('sha256', (string)$grant['proof']));
+    }
+
+    /** Firebase Storage bucket (private; accessed only with the service account). */
+    public static function bucket(): \Google\Cloud\Storage\Bucket {
+        $client = new \Google\Cloud\Storage\StorageClient([
+            'keyFile' => self::getServiceAccountData(),
+            'projectId' => self::projectId(),
+        ]);
+        return $client->bucket(env('FIREBASE_STORAGE_BUCKET', self::projectId() . '.firebasestorage.app'));
     }
 
     /**

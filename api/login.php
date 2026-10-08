@@ -55,5 +55,5 @@ try {
     ]);
 } catch (\Throwable $e) {
     error_log("Login processing error: " . $e->getMessage());
-    json_error("Sign-in failed: " . $e->getMessage(), 500);
+    json_error("Sign-in failed. Please try again.", 500);
 }

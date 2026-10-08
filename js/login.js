@@ -97,8 +97,8 @@ loginForm.addEventListener("submit", async (event) => {
     await startSession(user, profile).catch((e) => console.warn("Could not record session", e));
     window.location.replace("dashboard.html");
   } catch (error) {
-    console.error("Sign-in failed:", error);
     const code = error.code || "";
+    if (!code.startsWith("auth/")) console.error("Sign-in failed:", error);
     if (["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found", "auth/invalid-email"].includes(code)) {
       showLoginMsg("Incorrect email or password.");
     } else if (code === "auth/user-disabled") {

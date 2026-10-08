@@ -114,9 +114,12 @@ async function addMaster(file, values, selects = {}) {
 const one = async (col, field, value) => { const s = await adb.collection(col).where(field, "==", value).get(); return s.docs[0] ? { id: s.docs[0].id, ...s.docs[0].data() } : null; };
 const stockOf = async (wh, itemName) => { const s = await adb.collection("inventory").where("warehouse", "==", wh).where("itemName", "==", itemName).get(); return s.empty ? 0 : s.docs[0].data().qty; };
 
-async function fillPo(pg, { vendor, warehouse, lines, series = "PH", date, poType }) {
+// PO numbers are typed manually. Unless a test gives one, the next PH-style number is used (055, 056 …).
+let nextPh = 55;
+const phNo = (seq) => `CCPL/PH/${String(seq).padStart(3, "0")}/26-27`;
+async function fillPo(pg, { vendor, warehouse, lines, poNo, date, poType }) {
   const m = pg.locator(".modal-backdrop").last();
-  await m.locator("select[name=series]").selectOption(series);
+  await m.locator("input[name=poNo]").fill(poNo);
   if (poType) await m.locator("select[name=poType]").selectOption(poType);
   if (date) await m.locator("input[name=date]").fill(date);
   await selectContaining(m.locator("select[name=vendorId]"), vendor);
@@ -130,10 +133,10 @@ async function fillPo(pg, { vendor, warehouse, lines, series = "PH", date, poTyp
   }
   return m;
 }
-async function createPo(vendor, warehouse, lines, { series = "PH", date, poType } = {}) {
+async function createPo(vendor, warehouse, lines, { poNo = phNo(nextPh++), date, poType } = {}) {
   await goto("purchase-orders.html");
   await page.click("#newPo");
-  const m = await fillPo(page, { vendor, warehouse, lines, series, date, poType });
+  const m = await fillPo(page, { vendor, warehouse, lines, poNo, date, poType });
   await m.locator("#savePo").click();
   const text = await expectToast();
   await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
@@ -345,24 +348,19 @@ try {
   check(sample?.name === "SAMPLE CHEM PVT LTD" && sample.email === "accounts@sample.test" && sample.phone === "9800011111" && sample.paymentTerms === "60 Days" && sample.paymentTermsDays === 60 && sample.address2 === "OPP. TALKIES, MULUND WEST" && sample.partyType === "Supplier", "merged party keeps the most complete details from both rows (Zoho vendor → Supplier)");
   check((await one("parties", "name", "Old Supplier"))?.active === false, "Inactive status from Zoho carried over");
 
-  /* ================= 3. Numbering: PH series and Monthly series ================= */
-  console.log("\n3. PO series: PH (CCPL/PH/055/26-27) and Monthly (CCPL/OCT 26/01)");
-  const setNumbering = async (type, format, next, digits = 3) => {
-    await goto("settings.html");
-    const row = page.locator(`#numRows tr[data-k="${type}"]`);
-    await row.locator("[data-fmt]").fill(format);
-    await row.locator("[data-pad]").fill(String(digits));
-    await row.locator("[data-num]").fill(String(next));
-    await row.locator(`[data-setnum="${type}"]`).click();
-    await modal().locator("#confirmOk").click();
-    await expectToast();
-  };
-  await setNumbering("POPH", "CCPL/PH/{SEQ}/{FY}", 55);
+  /* ================= 3. Manual PO numbers: first PO ================= */
+  console.log("\n3. Manual PO number: nothing saved yet");
+  await goto("purchase-orders.html");
+  await page.click("#newPo");
+  await modal().locator("[data-lastpo]").filter({ hasText: "No previous" }).waitFor({ timeout: 10000 });
+  check((await modal().locator("[data-lastpo]").textContent()).trim() === "No previous PO number available. Enter your first PO number.", "no PO yet → \"No previous PO number available. Enter your first PO number.\"");
+  check(await modal().locator("#useLastPo").isDisabled(), "\"Use last PO no.\" is disabled when there is no PO");
+  await closeAllModals();
 
   /* ================= 4. PO for 10 KG apples: invoice → GRN → Kanta ================= */
   console.log("\n4. Apple PO: 5 + 5, Kanta 4.8 on the second");
   const applePo = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 10, rate: 100 }]);
-  check(applePo.poNo === "CCPL/PH/055/26-27", `PH series starts at the configured number: ${applePo.poNo}`);
+  check(applePo.poNo === "CCPL/PH/055/26-27", `manually entered first PO number saved as typed: ${applePo.poNo}`);
   check((await readFile(applePo.pdf)).subarray(0, 5).toString() === "%PDF-", "PO PDF downloaded");
   let po = await one("purchaseOrders", "poNo", applePo.poNo);
   check(near(po.totals.subTotal, 1000) && near(po.totals.total, 1180) && po.totals.taxes.map((t) => t.kind).join() === "CGST,SGST", "PO totals: 1000 + CGST 90 + SGST 90 = 1180");
@@ -404,7 +402,7 @@ try {
   check(detailText.includes("INV-A1") && detailText.includes("INV-A2") && detailText.includes("Kanta Qty") && detailText.includes("-0.2"), "PO detail shows PO/GRN/Kanta/Short/Inward/Pending and every invoice");
   check(!/\bnull\b|NaN|undefined/.test(detailText), "PO detail shows no null / NaN values");
   const appleRow = await modal().locator('#poLines tr[data-line="Apple"] td').allTextContents();
-  check(appleRow[1].startsWith("10") && appleRow[3] === "10" && appleRow[4] === "9.8" && appleRow[5] === "-0.2" && appleRow[6] === "0" && appleRow[7] === "9.8" && appleRow[9] === "0" && appleRow[10] === "0.2", `Apple row: PO 10 · GRN 10 · Kanta 9.8 · Short -0.2 · Rejected 0 · Accepted 9.8 · Pending 0.2 (${appleRow.slice(1, 11).join(" | ")})`);
+  check(appleRow[1].startsWith("10") && appleRow[3] === "10" && appleRow[4] === "9.8" && appleRow[5] === "-0.2" && appleRow[6] === "0" && appleRow[7] === "9.8" && appleRow[10] === "0" && appleRow[11] === "0.2", `Apple row: PO 10 · GRN 10 · Kanta 9.8 · Short -0.2 · Rejected 0 · Accepted 9.8 · Pending 0.2 (${appleRow.slice(1, 11).join(" | ")})`);
   check(detailText.includes("Transport cost (internal, not on PO)₹4,500.00") && detailText.includes("Self / CCPL Transport"), "PO detail shows the transport cost internally");
   await modal().locator("#pdfPo").click();
   await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
@@ -463,39 +461,67 @@ try {
   check(await stockOf("PG-106", "Hydrochloric Acid 33%") === 9980, "tanker Kanta 9,980 KG added to PG-106");
   check((await one("purchaseOrders", "poNo", acidPo.poNo)).status === "COMPLETED", "9,980 of 10,000 KG is within 0.5% tolerance → tanker PO COMPLETED");
 
-  /* ================= 6b. Duplicate-proof numbering ================= */
-  console.log("\n6b. Numbering never repeats");
-  await setNumbering("POPH", "CCPL/PH/{SEQ}/{FY}", 56);
-  const dupTest = await createPo("Pyramid", "PG-106", [{ item: "Apple", qty: 1, rate: 1 }]);
-  check(dupTest.poNo === "CCPL/PH/059/26-27", `counter set back to 056 by mistake → system skips used numbers and issues ${dupTest.poNo}`);
-
-  /* ================= 6b-2. Monthly series, month change, edit keeps number, simultaneous POs ================= */
-  console.log("\n6b-2. Monthly PO series");
-  const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  const now = new Date();
-  const monthLabel = (d) => `${MON[d.getMonth()]} ${String(d.getFullYear()).slice(-2)}`;
-  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const m1 = await createPo("Deepak", "PG-153", [{ item: "IPA", qty: 100, rate: 95 }], { series: "MONTHLY" });
-  const m2 = await createPo("Gujarat Acids", "PG-153", [{ item: "IPA", qty: 50, rate: 95 }], { series: "MONTHLY" });
-  check(m1.poNo === `CCPL/${monthLabel(now)}/01` && m2.poNo === `CCPL/${monthLabel(now)}/02`, `Monthly series: ${m1.poNo}, ${m2.poNo}`);
-  const m3 = await createPo("Deepak", "PG-153", [{ item: "IPA", qty: 10, rate: 95 }], { series: "MONTHLY", date: iso(nextMonth) });
-  check(m3.poNo === `CCPL/${monthLabel(nextMonth)}/01`, `PO dated next month restarts at 01: ${m3.poNo}`);
+  /* ================= 6b. Manual PO numbers: last PO reference, duplicates, edit, simultaneous saves ================= */
+  console.log("\n6b. Manual PO numbers");
+  const DUP = "This PO number already exists. Please enter a different PO number.";
+  await goto("purchase-orders.html");
+  await page.click("#newPo");
+  let pm = modal();
+  await pm.locator("#useLastPo:not([disabled])").waitFor({ timeout: 10000 });
+  check((await pm.locator("[data-lastpo]").textContent()).includes("CCPL/PH/058/26-27"), "last saved PO (most recently created) is shown as reference: CCPL/PH/058/26-27");
+  await pm.locator("#useLastPo").click();
+  check(await pm.locator("input[name=poNo]").inputValue() === "CCPL/PH/058/26-27", "\"Use last PO no.\" puts the last number into the editable field");
+  check(await pm.locator("select[name=vendorId]").inputValue() === "" && await pm.locator("input[data-f=qty]").first().inputValue() === "", "only the number is copied — no vendor, items or amounts");
+  await page.screenshot({ path: path.join(OUT, "12-po-number.png") });
+  await pm.locator("input[name=poNo]").fill(" ccpl/ph/058/26-27 ");
+  await pm.locator("[data-pocheck]").filter({ hasText: DUP }).waitFor({ timeout: 10000 });
+  check(true, "typing an existing number (other case / spaces) shows the duplicate message at once");
+  await fillPo(page, { vendor: "Pyramid", warehouse: "PG-106", lines: [{ item: "Apple", qty: 1, rate: 1 }], poNo: "  ccpl/ph/058/26-27  " });
+  const before = (await adb.collection("purchaseOrders").get()).size;
+  await pm.locator("#savePo").click();
+  check((await expectToast("error")) === DUP, "save with an existing number is blocked with the exact message");
+  check((await adb.collection("purchaseOrders").get()).size === before && (await adb.collection("purchaseOrders").where("poNo", "==", "CCPL/PH/058/26-27").get()).size === 1, "existing PO not overwritten, no second PO stored");
+  await pm.locator("input[name=poNo]").fill("CCPL/PH/059/26-27");
+  await pm.locator("#savePo").click();
+  check((await expectToast()) === "CCPL/PH/059/26-27 saved.", "after correcting the number the PO saves");
+  nextPh = 60;
+  await page.locator("#pdfDownload:not([disabled])").waitFor({ timeout: 30000 });
+  await closeAllModals();
+  // Any series / format can be typed
+  const m1 = await createPo("Deepak", "PG-153", [{ item: "IPA", qty: 100, rate: 95 }], { poNo: "CCPL/OCT 26/01" });
+  const m2 = await createPo("Gujarat Acids", "PG-153", [{ item: "IPA", qty: 50, rate: 95 }], { poNo: "PO-2026-27/HO/0001" });
+  check(m1.poNo === "CCPL/OCT 26/01" && m2.poNo === "PO-2026-27/HO/0001", `any series or format can be entered: ${m1.poNo}, ${m2.poNo}`);
+  await goto("purchase-orders.html");
+  await page.click("#newPo");
+  await modal().locator("#useLastPo:not([disabled])").waitFor({ timeout: 10000 });
+  check((await modal().locator("[data-lastpo]").textContent()).includes("PO-2026-27/HO/0001"), "\"last PO\" is the most recently saved PO (PO-2026-27/HO/0001), not the highest number (CCPL/PH/059/26-27)");
+  await closeAllModals();
   const ph = await createPo("Pyramid", "PG-106", [{ item: "IPA", qty: 5, rate: 90 }]);
-  check(ph.poNo === "CCPL/PH/060/26-27", `PH series has its own counter (monthly POs did not use PH numbers): ${ph.poNo}`);
-  // Editing keeps the number and the series
+  check(ph.poNo === "CCPL/PH/060/26-27", `series can be switched freely between POs: ${ph.poNo}`);
+  // Editing without changing the number
   let mPo = await one("purchaseOrders", "poNo", m1.poNo);
   await page.goto(`${BASE}/purchase-orders.html?open=${mPo.id}`);
   await modal().locator("#editPo").click();
   let em = modal();
-  check((await em.locator("input[readonly]").first().inputValue()).includes(m1.poNo) && await em.locator("select[name=series]").count() === 0, "edit form shows the fixed number; series cannot be changed");
+  check(await em.locator("input[name=poNo]").inputValue() === m1.poNo && !(await em.locator("input[name=poNo]").isDisabled()), "edit form shows the PO number in an editable field");
   await em.locator("input[data-f=qty]").first().fill("120");
-  await em.locator("input[name=date]").fill(iso(nextMonth));
   await em.locator("#savePo").click();
   await expectToast();
   mPo = (await adb.collection("purchaseOrders").doc(mPo.id).get()).data();
-  check(mPo.poNo === m1.poNo && mPo.series === "MONTHLY" && mPo.lines[0].qty === 120, "edited PO (qty and date changed) keeps its number");
-  // Two users create POs at the same moment
+  check(mPo.poNo === m1.poNo && mPo.lines[0].qty === 120, "editing a PO without changing its number saves (own number is not a duplicate)");
+  // Editing to another PO's number is blocked; to a new one works
+  await page.goto(`${BASE}/purchase-orders.html?open=${(await one("purchaseOrders", "poNo", m1.poNo)).id}`);
+  await modal().locator("#editPo").click();
+  em = modal();
+  await em.locator("input[name=poNo]").fill("po-2026-27/ho/0001");
+  await em.locator("#savePo").click();
+  check((await expectToast("error")) === DUP, "editing to another PO's number is blocked");
+  await em.locator("input[name=poNo]").fill("CCPL/OCT 26/01A");
+  await em.locator("#savePo").click();
+  await expectToast();
+  check(!!(await one("purchaseOrders", "poNo", "CCPL/OCT 26/01A")) && !(await one("purchaseOrders", "poNo", "CCPL/OCT 26/01")), "PO number corrected while editing");
+  await closeAllModals();
+  // Two users save the SAME new number at the same moment
   const context2 = await browser.newContext({ acceptDownloads: true, viewport: { width: 1440, height: 900 } });
   await routeCdn(context2);
   const page2 = await context2.newPage();
@@ -507,18 +533,18 @@ try {
   await page2.goto(`${BASE}/purchase-orders.html`); await page2.waitForSelector('body[data-loaded="1"]');
   await goto("purchase-orders.html");
   await page.click("#newPo"); await page2.click("#newPo");
-  const fa = await fillPo(page, { vendor: "Pyramid", warehouse: "PG-106", lines: [{ item: "Apple", qty: 2, rate: 10 }] });
-  const fb = await fillPo(page2, { vendor: "Deepak", warehouse: "PG-106", lines: [{ item: "Apple", qty: 3, rate: 10 }] });
-  await page.waitForFunction(() => document.querySelector("[data-nextno]")?.textContent.includes("CCPL/PH/"), null, { timeout: 10000 }).catch(() => {});
-  await page.screenshot({ path: path.join(OUT, "12-po-series.png") });
+  const fa = await fillPo(page, { vendor: "Pyramid", warehouse: "PG-106", lines: [{ item: "Apple", qty: 2, rate: 10 }], poNo: "CCPL/PH/061/26-27" });
+  const fb = await fillPo(page2, { vendor: "Deepak", warehouse: "PG-106", lines: [{ item: "Apple", qty: 3, rate: 10 }], poNo: "ccpl/ph/061/26-27" });
   await Promise.all([fa.locator("#savePo").click(), fb.locator("#savePo").click()]);
-  const [ta, tb] = await Promise.all([page.locator(".toast.ok").first().textContent({ timeout: 20000 }), page2.locator(".toast.ok").first().textContent({ timeout: 20000 })]);
-  const sim = [ta, tb].map((t) => t.replace(" saved.", "")).sort();
-  check(sim[0] === "CCPL/PH/061/26-27" && sim[1] === "CCPL/PH/062/26-27", `two POs saved at the same moment get different numbers: ${sim.join(", ")}`);
+  const toastOf = (pg) => pg.locator(".toast").first().textContent({ timeout: 20000 });
+  const sim = await Promise.all([toastOf(page), toastOf(page2)]);
+  check(sim.filter((t) => t.endsWith("saved.")).length === 1 && sim.filter((t) => t === DUP).length === 1, `same number saved at the same moment by two users → one saved, one blocked: ${sim.join(" | ")}`);
+  check((await adb.collection("purchaseOrders").get()).docs.filter((d) => d.data().poNo.toUpperCase() === "CCPL/PH/061/26-27").length === 1, "only one PO stored with that number");
+  nextPh = 62;
   await context2.close();
   await page.evaluate(() => document.querySelectorAll(".toast").forEach((x) => x.remove()));
   await closeAllModals();
-  const allNos = (await adb.collection("purchaseOrders").get()).docs.map((d) => d.data().poNo);
+  const allNos = (await adb.collection("purchaseOrders").get()).docs.map((d) => d.data().poNo.toUpperCase());
   check(new Set(allNos).size === allNos.length, `no duplicate PO numbers across ${allNos.length} POs`);
 
   /* ================= 6c. Opening / existing stock ================= */
@@ -661,7 +687,7 @@ try {
   await page.goto(`${BASE}/purchase-orders.html?open=${pB.id}`);
   await modal().locator("#reopenPo").waitFor();
   const closedRow = await modal().locator('#poLines tr[data-line="Toluene"] td').allTextContents();
-  check(closedRow[9] === "10" && closedRow[10] === "0" && (await modal().textContent()).includes("Closed with Balance"), `closed balance 10 shown separately, pending 0 (${closedRow.slice(1, 11).join(" | ")})`);
+  check(closedRow[10] === "10" && closedRow[11] === "0" && (await modal().textContent()).includes("Closed with Balance"), `closed balance 10 shown separately, pending 0 (${closedRow.slice(1, 12).join(" | ")})`);
   await page.screenshot({ path: path.join(OUT, "16-po-closed-with-balance.png") });
   await closeAllModals();
   await goto("inward.html"); await page.click("#newEntry");
@@ -824,7 +850,7 @@ try {
   await m.locator("input[data-f=qty]").first().fill("5000");
   await m.locator("input[data-f=qty]").first().dispatchEvent("change");
   await m.locator("#saveOut").click();
-  check((await expectToast("error")).includes("Insufficient stock"), "dispatch more than available stock is blocked");
+  check(/Insufficient (RM |Ready )?stock/.test(await expectToast("error")), "dispatch more than available stock is blocked");
   await closeAllModals();
 
   await goto("outward.html"); await page.click("#newOut");

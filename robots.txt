@@ -1,0 +1,3 @@
+# CCPL ERP is a private business application. Do not crawl or index any part of it.
+User-agent: *
+Disallow: /

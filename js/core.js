@@ -109,6 +109,27 @@ export const PO_SERIES = {
   PH: { type: "POPH", label: "PH series", example: "CCPL/PH/055/26-27" },
   MONTHLY: { type: "POM", label: "Monthly series", example: "CCPL/OCT 26/01 (restarts at 01 every month)" }
 };
+/*
+ * Manual PO numbers. The user types the whole number (any prefix / series / FY / sequence); the only rule is that it is unique.
+ * Uniqueness ignores leading/trailing spaces, repeated inner spaces and letter case, and is enforced by a registry document
+ * /poNumbers/{poNumberKey} created in the same transaction as the PO (firestore.rules checks both), so two people saving the
+ * same number at the same moment cannot both succeed. Numbers of cancelled or deleted POs stay registered (never reused).
+ */
+export const PO_NO_MAX = 60;
+export const PO_NO_DUPLICATE_MSG = "This PO number already exists. Please enter a different PO number.";
+export const PO_NO_NONE_MSG = "No previous PO number available. Enter your first PO number.";
+/** Display form: trimmed, inner runs of spaces collapsed (letter case kept as typed). */
+export const cleanPoNo = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+/** Registry key: case-insensitive; "/" is escaped because it cannot appear in a document id. Must match firestore.rules. */
+export const poNumberKey = (value) => `PO_${cleanPoNo(value).toUpperCase().replace(/\//g, "%2F")}`;
+/** Returns an error message, or "" when the (cleaned) number is acceptable. */
+export function poNoProblem(value) {
+  const v = cleanPoNo(value);
+  if (!v) return "Enter the PO number.";
+  if (v.length > PO_NO_MAX) return `The PO number can have at most ${PO_NO_MAX} characters.`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9 \/._()#&:-]*$/.test(v)) return "The PO number may contain letters, digits, spaces and / - _ . ( ) # & : only, and must start with a letter or digit.";
+  return "";
+}
 export const PARTY_TYPES = ["Customer", "Supplier", "Both"];
 /** How the material came in (recorded on each inward entry; internal only). */
 export const TRANSPORT_MODES = { SELF: "Self / CCPL Transport", PARTY: "Party Transport" };
@@ -707,6 +728,12 @@ export function initPage(pageKey, { permission = null, superAdminOnly = false } 
         else heartbeat(true);
         const page = renderShell(pageKey);
         startIdleTimer();
+        // Go-live reset / maintenance: firestore.rules block every save while paused; tell the user why.
+        getDoc(doc(db, "settings", "maintenance")).then((m) => {
+          if (m.exists() && m.data().paused === true && !isSuperAdmin()) {
+            page.insertAdjacentHTML("beforebegin", '<div class="notice error" style="margin:12px 16px 0"><i class="fa-solid fa-circle-pause"></i><div><b>Data entry is paused</b> by the administrator (data reset in progress). You can view records, but nothing can be saved until it is resumed.</div></div>');
+          }
+        }).catch(() => {});
         if ((permission && !can(permission)) || (superAdminOnly && !isSuperAdmin())) {
           page.innerHTML = `<div class="notice error"><i class="fa-solid fa-lock"></i><div>Your role (<b>${esc(state.profile.role)}</b>) does not have access to this page. Please contact an administrator.</div></div>`;
           return;

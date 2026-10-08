@@ -5,19 +5,21 @@ import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, busy, logActivity, qty, fmtDateTime,
   downloadBlob, NUMBER_LABELS, isSuperAdmin
 } from "./core.js";
-import { storage } from "./firebase-config.js";
+import { storage, auth } from "./firebase-config.js";
+import { openPrivateFile } from "./uploads.js";
 import {
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, writeBatch, query, limit, getCountFromServer, serverTimestamp,
   Timestamp, GeoPoint, Bytes, DocumentReference
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { ref, uploadBytes, getDownloadURL, listAll, getMetadata } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+import { ref, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 /* ---------------- What is backed up / cleared / restored ---------------- */
 const GROUPS = [
   { key: "tx", label: "Transactions", note: "POs, inward, stock, sales, transfers, write-offs, processing, ledger, activity log", wipe: true,
     colls: ["purchaseOrders", "receipts", "outwards", "transfers", "adjustments", "conversions", "quotations", "salesOrders", "proformaInvoices", "inventory", "stockLedger", "activity"] },
-  { key: "num", label: "Document numbering", note: "running counters and the register of issued numbers", wipe: true, colls: ["counters", "docNumbers"] },
-  { key: "masters", label: "Masters", note: "vendors & customers, items & packaging", wipe: true, colls: ["parties", "items"] },
+  { key: "num", label: "Document numbering", note: "running counters, the register of issued numbers and the PO-number register", wipe: true, colls: ["counters", "docNumbers", "poNumbers"] },
+  { key: "parties", label: "Vendor & customer master", note: "deleted by the go-live reset", wipe: true, colls: ["parties"] },
+  { key: "items", label: "Item master", note: "items & packaging with codes and all details — backed up and restored, never deleted", wipe: false, colls: ["items"] },
   { key: "setup", label: "Setup", note: "company settings, warehouses — backed up and restored, never deleted", wipe: false, colls: ["settings", "warehouses"] },
   { key: "users", label: "Users (reference only)", note: "login profiles — backed up for reference, never deleted or restored", wipe: false, colls: ["users"] }
 ];
@@ -25,7 +27,7 @@ const LABEL = {
   purchaseOrders: "Purchase orders", receipts: "Inward receipts (GE / GRN / Kanta)", outwards: "Dispatches", transfers: "Stock transfers",
   adjustments: "Write-offs / opening stock", conversions: "Process RM → Ready", quotations: "Quotations", salesOrders: "Sales orders",
   proformaInvoices: "Proforma invoices", inventory: "Stock balances", stockLedger: "Stock ledger", activity: "Activity log",
-  counters: "Number counters", docNumbers: "Issued numbers register", parties: "Vendors & customers", items: "Items & packaging",
+  counters: "Number counters", docNumbers: "Issued numbers register", poNumbers: "PO numbers register", parties: "Vendors & customers", items: "Items & packaging",
   settings: "Settings", warehouses: "Warehouses", users: "Users"
 };
 const ALL = GROUPS.flatMap((g) => g.colls);
@@ -107,6 +109,18 @@ async function logFailedAttempt(purpose) {
 }
 const lockedOut = () => failed.filter((t) => Date.now() - t < 15 * 60 * 1000).length >= 5;
 
+/* ---------------- Private Storage (attachments, backups) through the server API ---------------- */
+const storageAdmin = async (body) => {
+  const res = await fetch("api/storage-admin.php", {
+    method: "POST", cache: "no-store",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${await auth.currentUser.getIdToken()}` },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.success) throw new Error(data.error || `Attachment service error (${res.status}).`);
+  return data;
+};
+
 /* ---------------- Backup ---------------- */
 async function buildBackup(reason, onStep = () => {}) {
   const collections = {};
@@ -163,6 +177,7 @@ async function writeAll(name, docs, onStep) {
     batch = writeBatch(db); n = 0; bytes = 0;
   };
   for (const d of docs) {
+    if (name === "settings" && d.id === "maintenance") continue; // the pause switch is never restored from a backup
     const size = JSON.stringify(d.data).length;
     if (n >= BATCH_DOCS || (n && bytes + size > BATCH_BYTES)) await flush();
     batch.set(doc(db, name, d.id), decode(d.data));
@@ -195,9 +210,10 @@ async function start() {
 
   page.innerHTML = `${pageHeader("Admin", "Backup, Fresh Start & Restore", "Only for the super admin. Every reset or restore needs the separate reset password and always takes a full backup first.")}
     <div class="card" id="pwCard"></div>
+    <div id="pauseCard"></div>
     <div class="grid cols-3" style="margin-bottom:16px">
       <div class="card"><div class="card-body"><h3 style="margin-top:0"><i class="fa-solid fa-download"></i> Backup now</h3><p class="small muted">Downloads every record as one JSON file and keeps a copy in the cloud. Safe — changes nothing.</p><button class="btn primary" id="backupBtn">Download full backup</button></div></div>
-      <div class="card"><div class="card-body"><h3 style="margin-top:0"><i class="fa-solid fa-broom"></i> Fresh start</h3><p class="small muted">Deletes trial transactions (and optionally masters) after a full backup. Settings, warehouses and users stay.</p><button class="btn danger" id="resetBtn">Delete trial data…</button></div></div>
+      <div class="card"><div class="card-body"><h3 style="margin-top:0"><i class="fa-solid fa-broom"></i> Go-live reset</h3><p class="small muted">Shows the exact deletion scope, pauses data entry, takes a full backup, then deletes all test business data. Only the item master (plus settings, warehouses and users) is kept.</p><button class="btn danger" id="resetBtn">Review scope &amp; reset…</button></div></div>
       <div class="card"><div class="card-body"><h3 style="margin-top:0"><i class="fa-solid fa-upload"></i> Restore</h3><p class="small muted">Puts the data back exactly as it was in a backup file (after backing up the current data).</p><button class="btn" id="restoreBtn">Restore from backup file…</button></div></div>
     </div>
     <div class="card" id="runCard" hidden><div class="card-head"><h3 id="runTitle">Working…</h3></div><div class="card-body"><div class="segbar lg" style="margin-bottom:10px"><i class="seg-acc" id="runBar" style="width:0%"></i></div><ol class="small" id="runLog" style="margin:0;padding-left:18px"></ol></div></div>
@@ -276,18 +292,16 @@ async function start() {
   const renderCloud = async () => {
     const rows = page.querySelector("#cloudRows");
     try {
-      const list = await listAll(ref(storage, "backups"));
-      const files = await Promise.all(list.items.map(async (it) => ({ it, meta: await getMetadata(it) })));
-      files.sort((a, b) => b.meta.timeCreated.localeCompare(a.meta.timeCreated));
-      rows.innerHTML = files.map(({ it, meta }) => `<tr><td class="mono small">${esc(it.name)}</td><td class="small">${esc(fmtDateTime(new Date(meta.timeCreated)))}</td><td class="num">${kb(meta.size)}</td><td><button class="btn sm" data-dl="${esc(it.fullPath)}">Download</button></td></tr>`).join("")
+      const { files } = await storageAdmin({ action: "list" });
+      rows.innerHTML = files.map((f) => `<tr><td class="mono small">${esc(f.name)}</td><td class="small">${esc(fmtDateTime(new Date(f.created)))}</td><td class="num">${kb(f.size)}</td><td><button class="btn sm" data-dl="${esc(f.path)}">Download</button></td></tr>`).join("")
         || '<tr><td class="empty" colspan="4">No backups yet.</td></tr>';
     } catch (error) {
-      rows.innerHTML = `<tr><td class="empty" colspan="4">Could not list cloud backups (${esc(error.code || error.message)}).</td></tr>`;
+      rows.innerHTML = `<tr><td class="empty" colspan="4">Could not list cloud backups (${esc(error.message)}).</td></tr>`;
     }
   };
   page.querySelector("#cloudRows").addEventListener("click", async (e) => {
     const b = e.target.closest("[data-dl]"); if (!b) return;
-    try { window.open(await getDownloadURL(ref(storage, b.dataset.dl)), "_blank", "noopener"); } catch (error) { reportError(error); }
+    openPrivateFile(b.dataset.dl, { download: true });
   });
   page.querySelector("#refreshCounts").addEventListener("click", renderCounts);
 
@@ -340,76 +354,124 @@ async function start() {
     } catch (error) { run.end(`Backup failed: ${error.message}`, false); reportError(error); }
   });
 
-  /* ----- fresh start ----- */
+  /* ----- data-entry pause (maintenance) ----- */
+  // While /settings/maintenance.paused is true, firestore.rules refuse every business write except the super admin's.
+  const setPause = async (paused, reason = "") => {
+    const batch = writeBatch(db);
+    batch.set(doc(db, "settings", "maintenance"), { paused, reason, by: state.user.email, at: serverTimestamp() });
+    logActivity(batch, { module: "Data", action: paused ? "DATA ENTRY PAUSED" : "DATA ENTRY RESUMED", summary: paused ? `Data entry paused: ${reason}` : "Data entry resumed" });
+    await batch.commit();
+  };
+  const renderPause = async () => {
+    const m = (await getDoc(doc(db, "settings", "maintenance")).catch(() => null))?.data();
+    const box = page.querySelector("#pauseCard");
+    box.innerHTML = m?.paused ? `<div class="notice error" style="margin-bottom:16px"><i class="fa-solid fa-circle-pause"></i><div><b>Data entry is paused</b> for all users (${esc(m.reason || "")}, by ${esc(m.by || "")}).
+      <button class="btn sm" id="resumeBtn" style="margin-left:8px">Resume data entry</button></div></div>` : "";
+    box.querySelector("#resumeBtn")?.addEventListener("click", async (e) => {
+      const done = busy(e.currentTarget);
+      try { await setPause(false); toast("Data entry resumed.", "ok"); await renderPause(); } catch (error) { reportError(error); } finally { done(); }
+    });
+  };
+
+  /* ----- go-live reset ----- */
+  // Fixed scope agreed for live operations: everything business-related goes except the item master.
+  const RESET_COLLS = [...GROUPS.find((g) => g.key === "tx").colls, ...GROUPS.find((g) => g.key === "parties").colls, "docNumbers", "poNumbers"];
+  const KEEP_COLLS = ["items", "settings", "warehouses", "users"];
   page.querySelector("#resetBtn").addEventListener("click", async () => {
     if (!(await readInfo())) { toast("Set the reset password first.", "error"); return; }
-    const counters = (await getDocs(collection(db, "counters"))).docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.id.localeCompare(b.id));
+    const [counts, counters, files] = await Promise.all([
+      renderCounts(),
+      getDocs(collection(db, "counters")).then((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((c) => !["POPH", "POM"].includes(c.type)).sort((a, b) => a.id.localeCompare(b.id))),
+      storageAdmin({ action: "count" }).catch((error) => ({ error: error.message }))
+    ]);
+    const row = (c, action) => `<tr><td>${esc(LABEL[c])}</td><td class="num strong">${counts[c] === null ? "—" : qty(counts[c])}</td><td>${action}</td></tr>`;
     const modal = openModal({
-      title: "Fresh start — delete trial data",
+      title: "Go-live reset — exact scope",
       size: "wide",
-      body: `<div class="notice error"><i class="fa-solid fa-triangle-exclamation"></i><div>This permanently deletes the selected data. A full backup is downloaded and saved in the cloud first, and the data can be put back with <b>Restore</b>.</div></div>
+      body: `<div class="notice error"><i class="fa-solid fa-triangle-exclamation"></i><div>Review the list below. Nothing is deleted until you confirm. Data entry is paused for all users, a full backup is downloaded and saved privately in the cloud (attachments are copied too), and only then is the data deleted.</div></div>
         <form id="rsForm" autocomplete="off">
-        <div class="section-title">What to delete</div>
-        <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" checked disabled /> <b>All transactions</b> — POs, inward / GRN / Kanta / QC, stock & stock ledger, dispatch, quotations, SO, proforma, transfers, write-offs, processing, activity log</label>
-        <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" name="masters" /> Also delete <b>masters</b> (vendors & customers, items & packaging)</label>
-        <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" name="numbers" checked /> <b>Restart document numbers</b> (clears the register of issued numbers and sets each counter below)</label>
-        <p class="small muted">Always kept: company settings, warehouses, users and the private access audit.</p>
-        <div id="numBox">${counters.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Document</th><th>Period</th><th class="num">Next now</th><th class="num" style="width:140px">Restart at</th></tr></thead><tbody>
-          ${counters.map((c) => `<tr><td>${esc(NUMBER_LABELS[c.type] || c.type || c.id)}</td><td class="small">${esc(c.fy || "")}</td><td class="num">${esc(c.next)}</td><td><input type="number" min="1" step="1" class="num" data-counter="${esc(c.id)}" value="${esc(c.setNext || 1)}" /></td></tr>`).join("")}</tbody></table></div>
-          <p class="small muted">"Restart at" defaults to the number you last set in Settings (or 1).</p>` : '<p class="small muted">No counters yet.</p>'}</div>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Records</th><th class="num">Now</th><th>Action</th></tr></thead><tbody>
+          ${RESET_COLLS.map((c) => row(c, '<span class="badge red">DELETE</span>')).join("")}
+          <tr><td>Attachments (invoices, COA, Kanta slips, write-off files)</td><td class="num strong">${files.error ? "?" : qty(files.count)}</td><td>${files.error ? `<span class="badge red">CANNOT CHECK</span> <span class="small">${esc(files.error)}</span>` : '<span class="badge red">DELETE</span> <span class="small muted">after a private copy</span>'}</td></tr>
+          ${row("counters", '<span class="badge amber">RESTART</span> <span class="small muted">numbers set below</span>')}
+          ${KEEP_COLLS.map((c) => row(c, '<span class="badge green">KEEP</span>')).join("")}
+          <tr><td>Login sessions (private access audit)</td><td class="num">—</td><td><span class="badge green">KEEP</span> <span class="small muted">security log, not business data</span></td></tr>
+        </tbody></table></div>
+        <p class="small muted">Stock balances and the stock ledger are deleted, so every item starts at zero stock. Enter opening stock afterwards (Inventory → Add Existing / Opening Stock). PO numbers are entered manually on each PO, so there is no PO counter.</p>
+        <div class="section-title">Restart document numbers</div>
+        ${counters.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Document</th><th>Period</th><th class="num">Next now</th><th class="num" style="width:140px">Restart at</th></tr></thead><tbody>
+          ${counters.map((c) => `<tr><td>${esc(NUMBER_LABELS[c.type] || c.type || c.id)}</td><td class="small">${esc(c.fy || "")}</td><td class="num">${esc(c.next)}</td><td><input type="number" min="1" step="1" class="num" data-counter="${esc(c.id)}" value="${esc(c.setNext || 1)}" /></td></tr>`).join("")}</tbody></table></div>` : '<p class="small muted">No counters yet.</p>'}
+        <label class="small" style="display:block;margin:12px 0 6px"><input type="checkbox" name="approve" /> I have reviewed the scope above and approve deleting these records.</label>
         <div class="form-grid" style="margin-top:12px">
           <label class="field"><span>Type <b>RESET</b> to confirm</span><input name="confirmWord" autocomplete="off" /></label>
           <label class="field"><span>Reset password</span><input type="password" name="pw" autocomplete="off" /></label>
         </div></form>`,
-      footer: '<button class="btn" data-close>Cancel</button><button class="btn danger" id="rsGo"><i class="fa-solid fa-broom"></i> Back up &amp; delete</button>'
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn danger" id="rsGo"><i class="fa-solid fa-broom"></i> Pause, back up &amp; reset</button>'
     });
     const f = modal.el.querySelector("#rsForm");
-    f.numbers.addEventListener("change", () => { modal.el.querySelector("#numBox").hidden = !f.numbers.checked; });
     modal.el.querySelector("#rsGo").addEventListener("click", async () => {
-      const opts = { masters: f.masters.checked, numbers: f.numbers.checked };
       const restartAt = [...f.querySelectorAll("[data-counter]")].map((i) => ({ id: i.dataset.counter, next: Number(i.value) }));
+      if (files.error) { toast("The attachment service is not reachable, so attachments cannot be backed up. Fix it before resetting.", "error"); return; }
+      if (!f.approve.checked) { toast("Tick the approval box after reviewing the scope.", "error"); return; }
       if (f.confirmWord.value.trim() !== "RESET") { toast("Type RESET to confirm.", "error"); return; }
-      if (opts.numbers && restartAt.some((c) => !Number.isInteger(c.next) || c.next < 1)) { toast("Restart numbers must be whole numbers from 1.", "error"); return; }
+      if (restartAt.some((c) => !Number.isInteger(c.next) || c.next < 1)) { toast("Restart numbers must be whole numbers from 1.", "error"); return; }
       if (lockedOut()) { toast("Too many wrong attempts — wait 15 minutes.", "error"); return; }
       const pw = f.pw.value;
       modal.close();
-      const colls = [...GROUPS[0].colls, ...(opts.numbers ? ["docNumbers"] : []), ...(opts.masters ? GROUPS[2].colls : [])];
-      run.begin("Fresh start", colls.length + 5);
+      const itemsBefore = counts.items;
+      run.begin("Go-live reset", RESET_COLLS.length + 9);
       try {
         run.step("Checking the reset password…");
         await openGrant(pw, "reset");
         run.next("Reset password accepted.");
-        const b = await takeBackup("before-reset", (t) => run.step(t));
-        run.next(`Backup <b>${esc(b.filename)}</b> downloaded and saved in the cloud.`);
+        run.step("Pausing data entry for all users…");
+        await setPause(true, "go-live reset in progress");
+        await renderPause();
+        run.next("Data entry paused for all users.");
+        const b = await takeBackup("before-golive-reset", (t) => run.step(t));
+        run.next(`Backup <b>${esc(b.filename)}</b> downloaded and saved privately in the cloud.`);
+        const fileStamp = b.filename.match(/(\d{8}-\d{6})/)[1];
+        run.step("Copying attachments to the private backup folder…");
+        const copied = await storageAdmin({ action: "backup", stamp: fileStamp });
+        run.next(`Attachments: ${qty(copied.copied)} copied to <span class="mono">${esc(copied.folder)}</span>.`);
         const deleted = {};
-        for (const name of colls) {
+        for (const name of RESET_COLLS) {
           run.step(`${LABEL[name]}: deleting…`);
           deleted[name] = await wipe(name, (t) => run.step(t));
           run.next(`${esc(LABEL[name])}: ${qty(deleted[name])} deleted.`);
         }
-        if (opts.numbers && restartAt.length) {
+        await keepGrant();
+        run.step("Deleting attachments…");
+        const removed = await storageAdmin({ action: "delete", stamp: fileStamp });
+        run.next(`Attachments: ${qty(removed.deleted)} deleted (copies kept in the backup).`);
+        if (restartAt.length) {
           const batch = writeBatch(db);
           restartAt.forEach((c) => batch.set(doc(db, "counters", c.id), { next: c.next, updatedAt: serverTimestamp() }, { merge: true }));
           await batch.commit();
         }
-        run.next(opts.numbers ? `Document numbers restarted (${restartAt.length} counter${restartAt.length === 1 ? "" : "s"}).` : "Document numbers kept as they were.");
-        run.step("Checking…");
-        const left = (await Promise.all(colls.map(async (c) => [c, await countOf(c)]))).filter(([, n]) => n);
-        if (left.length) throw new Error(`Some records could not be deleted: ${left.map(([c, n]) => `${LABEL[c]} ${n}`).join(", ")}. Run Fresh start again.`);
+        run.next(`Document numbers restarted (${restartAt.length} counter${restartAt.length === 1 ? "" : "s"}).`);
+        run.step("Verifying…");
+        const left = (await Promise.all(RESET_COLLS.map(async (c) => [c, await countOf(c)]))).filter(([, n]) => n !== 0);
+        if (left.length) throw new Error(`Some records are still there: ${left.map(([c, n]) => `${LABEL[c]} ${n ?? "?"}`).join(", ")}. Run the reset again (data entry stays paused).`);
+        const filesLeft = (await storageAdmin({ action: "count" })).count;
+        if (filesLeft) throw new Error(`${filesLeft} attachment(s) are still there. Run the reset again (data entry stays paused).`);
+        const itemsAfter = await countOf("items");
+        if (itemsAfter !== itemsBefore) throw new Error(`Item master check failed: ${itemsBefore} before, ${itemsAfter} after. Restore from ${b.filename}.`);
+        run.next(`Verified: no business records, stock balances or attachments left; item master intact (${qty(itemsAfter)} items).`);
         const batch = writeBatch(db);
-        logActivity(batch, { module: "Data", action: "DATA RESET", refNo: b.filename, summary: `Fresh start by ${state.user.email}: deleted ${Object.entries(deleted).map(([k, v]) => `${LABEL[k]} ${v}`).join(", ")}${opts.masters ? "" : " · masters kept"}${opts.numbers ? " · numbering restarted" : ""}. Backup: ${b.filename}` });
+        logActivity(batch, { module: "Data", action: "GO-LIVE RESET", refNo: b.filename, summary: `Go-live reset by ${state.user.email}: deleted ${Object.entries(deleted).map(([k, v]) => `${LABEL[k]} ${v}`).join(", ")}, attachments ${removed.deleted} · item master kept (${itemsAfter}). Backup: ${b.filename}` });
         await batch.commit();
-        run.next("Verified: nothing left. Activity log entry “DATA RESET” recorded.");
+        await setPause(false);
         await closeGrant();
-        run.next();
-        run.end("Fresh start complete", true);
-        toast("Fresh start complete.", "ok");
+        run.next("Data entry resumed. Activity log entry “GO-LIVE RESET” recorded.");
+        run.end("Go-live reset complete", true);
+        toast("Go-live reset complete.", "ok");
       } catch (error) {
         await closeGrant();
-        run.end(`Stopped: ${error.message}`, false);
+        run.end(`Stopped: ${error.message} — data entry is still paused; resume it on this page when ready.`, false);
         reportError(error);
       }
-      await Promise.all([renderCounts(), renderCloud()]);
+      await Promise.all([renderCounts(), renderCloud(), renderPause()]);
     });
   });
 
@@ -503,7 +565,7 @@ async function start() {
     });
   });
 
-  await Promise.all([renderPw(), renderCounts(), renderCloud()]);
+  await Promise.all([renderPw(), renderCounts(), renderCloud(), renderPause()]);
   document.body.dataset.loaded = "1";
 }
 
