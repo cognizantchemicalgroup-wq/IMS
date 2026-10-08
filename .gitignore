@@ -9,3 +9,4 @@ tests/output/
 vendor/
 .env
 api/config.local.php
+*.zip
