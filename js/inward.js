@@ -6,6 +6,8 @@
 // accepted / rejected / pending quantities.
 // A vehicle can be fully rejected ("Vehicle Rejected" at entry, GRN, Kanta, or after Kanta with stock reversed),
 // or partly rejected at Kanta (accepted and rejected quantities recorded separately).
+// QC: when the GRN says "Pending QC", Kanta puts the material in quarantine (stage QC PENDING) — nothing enters stock
+// until a manager / admin releases it; if QC rejects it, it never appears in inventory at all.
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, qty, money, fmtDate, fmtDateTime, isoDate, round, reserveNumber, commitNumber,
@@ -80,6 +82,9 @@ async function start() {
   let tab = location.hash === "#kanta" ? "KANTA PENDING" : "GRN PENDING";
   const canOperate = can("operations");
   const canResolve = can("close");
+  const canQc = can("qc");
+  // Explicit flag saved at GRN (older GRNs that only said "Pending QC" were never held — they keep the old behaviour).
+  const isQuarantine = (r) => r.grn?.quarantine === true;
 
   page.innerHTML = `${pageHeader("Purchase", "Inward · GRN · Kanta", "Invoice → GRN → Kanta. Only the accepted Kanta quantity goes into stock and is payable. One supplier bill can be split across several POs of the same party.",
     `<button class="btn" id="exportBtn" title="Export for accounts / Tally"><i class="fa-solid fa-download"></i> Export</button>${canOperate ? '<button class="btn primary" id="newEntry"><i class="fa-solid fa-file-invoice"></i> New Invoice / Receipt</button>' : ""}`)}
@@ -92,7 +97,7 @@ async function start() {
     </div>
     <p class="small muted">Tally remains the accounting system. "${HOLD_TEXT}" is an instruction to accounts not to pay that receipt (or its rejected quantity); it does not block anything in Tally.</p>`;
 
-  const TABS = [["GRN PENDING", "GRN pending"], ["KANTA PENDING", "Awaiting Kanta"], ["COMPLETED", "Inwarded"], ["REJECTED", "Vehicle rejected"], ["HOLD", "Payment hold"], ["ALL", "All"]];
+  const TABS = [["GRN PENDING", "GRN pending"], ["KANTA PENDING", "Awaiting Kanta"], ["QC PENDING", "Awaiting QC (quarantine)"], ["COMPLETED", "Inwarded"], ["REJECTED", "Vehicle rejected"], ["HOLD", "Payment hold"], ["ALL", "All"]];
   const inTab = (r, t) => t === "ALL" || (t === "HOLD" ? isOnHold(r) : r.stage === t);
   const itemsText = (r) => r.lines.map((l) => l.name).join(" ");
   const poLinks = (r) => {
@@ -126,6 +131,7 @@ async function start() {
       let action = "";
       if (canOperate && r.stage === "GRN PENDING") action = `<button class="btn sm primary" data-grn="${esc(r.id)}">GRN</button>`;
       if (canOperate && r.stage === "KANTA PENDING") action = `<button class="btn sm primary" data-kanta="${esc(r.id)}">Kanta</button>`;
+      if (canQc && r.stage === "QC PENDING") action = `<button class="btn sm primary" data-qc="${esc(r.id)}">QC release</button>`;
       const why = r.rejection?.reason || r.partialRejection?.reason;
       return `<tr>
         <td class="strong nowrap"><a href="#" data-view="${esc(r.id)}">${esc(r.geNo)}</a>${r.grn ? `<div class="small muted">${esc(r.grn.grnNo)}</div>` : ""}<div class="small muted">${esc(warehouseByCode(r.warehouse).name)}</div></td>
@@ -157,6 +163,7 @@ async function start() {
     const find = (id) => receipts.find((r) => r.id === id);
     const g = event.target.closest("[data-grn]"); if (g) { openGrn(find(g.dataset.grn)); return; }
     const k = event.target.closest("[data-kanta]"); if (k) { openKanta(find(k.dataset.kanta)); return; }
+    const q = event.target.closest("[data-qc]"); if (q) { openQc(find(q.dataset.qc)); return; }
     const v = event.target.closest("[data-view]"); if (v) { event.preventDefault(); openView(find(v.dataset.view)); }
   });
   ["#search", "#whFilter", "#fromDate", "#toDate"].forEach((s) => page.querySelector(s).addEventListener(s === "#search" ? "input" : "change", render));
@@ -184,7 +191,7 @@ async function start() {
 
   /* ---------------- 1. Invoice / receipt entry ---------------- */
   // quantity already invoiced on receipts of this PO line that have not been through Kanta yet
-  const inProcessOf = (poId, lineId) => receipts.filter((r) => ["GRN PENDING", "KANTA PENDING"].includes(r.stage))
+  const inProcessOf = (poId, lineId) => receipts.filter((r) => ["GRN PENDING", "KANTA PENDING", "QC PENDING"].includes(r.stage))
     .reduce((s, r) => s + r.lines.filter((x) => x.poId === poId && x.poLineId === lineId).reduce((a, x) => a + n(x.invoiceQty), 0), 0);
 
   function openReceiptForm() {
@@ -396,7 +403,7 @@ async function start() {
           ${r.lines.map((l, i) => `<tr><td class="strong">${esc(l.name)}</td><td class="small nowrap">${esc(l.poNo || "—")}</td><td class="num">${qty(n(l.invoiceQty))}</td><td><input type="number" step="any" min="0" class="num" name="g${i}" value="${esc(n(l.invoiceQty))}" /></td><td>${esc(l.unit)}</td></tr>`).join("")}
         </tbody></table>
         <div class="form-grid" style="margin-top:14px">
-          <label class="field"><span>QC Status</span><select name="qc"><option>Approved</option><option>Approved with deviation</option><option>Pending QC</option></select></label>
+          <label class="field span-2"><span>QC Status</span><select name="qc"><option ${state.company.qcQuarantine ? "" : "selected"}>Approved (QC passed / not required)</option><option>Approved with deviation</option><option ${state.company.qcQuarantine ? "selected" : ""}>Pending QC — hold in quarantine until QC release</option></select><small class="help">Optional. Approved: Kanta adds the material to stock. Pending QC: after Kanta it stays in quarantine and is <b>not</b> in stock until a manager / admin releases it.${state.company.qcQuarantine ? " (QC quarantine is switched on in Settings.)" : ""}</small></label>
           <label class="field"><span>Our Batch No.</span><input name="batchNo" /></label>
           <label class="field span-2"><span>Remark</span><input name="remark" /></label>
         </div></form>
@@ -423,7 +430,7 @@ async function start() {
           const number = await reserveNumber(tx, "GRN", { date: isoDate() });
           commitNumber(tx, number, r.id);
           const lines = cur.lines.map((l, i) => ({ ...l, grnQty: grnQtys[i] }));
-          tx.update(ref, { stage: "KANTA PENDING", lines, grn: { grnNo: number.number, qc: v.qc, batchNo: v.batchNo, remark: v.remark, at: serverTimestamp(), by: by() } });
+          tx.update(ref, { stage: "KANTA PENDING", lines, grn: { grnNo: number.number, qc: v.qc, quarantine: /^Pending QC/.test(v.qc), batchNo: v.batchNo, remark: v.remark, at: serverTimestamp(), by: by() } });
           const describe = (ls) => ls.map((l) => `${l.name} ${qty(l.grnQty)}${l.grnQty !== n(l.invoiceQty) ? ` (invoice ${qty(n(l.invoiceQty))})` : ""} ${l.unit}`).join(", ");
           updatePos(tx, poMap, lines, (l) => ({ grnQty: l.grnQty, pendingKantaQty: l.grnQty }), "GRN", (mine) => `${number.number} for ${cur.geNo}: ${describe(mine)}`);
           logActivity(tx, { module: "Inward", action: "GRN", refId: r.id, refNo: number.number, summary: `${number.number} (${cur.geNo}): received ${describe(lines)}. QC: ${v.qc}. Awaiting Kanta.` });
@@ -462,8 +469,9 @@ async function start() {
           <label class="field span-2"><span>Kanta slip</span><input type="file" name="slip" accept=".pdf,.jpg,.jpeg,.png" /></label>
           <label class="field span-2"><span>Remark</span><input name="remark" /></label>
         </div></form>
+        ${isQuarantine(r) ? `<div class="notice" style="margin-top:10px"><i class="fa-solid fa-flask"></i><div><b>QC pending:</b> after Kanta the accepted quantity goes into <b>quarantine</b> — it is not in stock and not available until QC releases it.</div></div>` : ""}
         <p class="small muted">Accepted quantity goes to <b>${esc(warehouseByCode(r.warehouse).name)}</b> and counts against the PO. Rejected quantity adds no stock, keeps the PO pending and is put on payment hold for accounts.</p>`,
-      footer: `<button class="btn" data-close>Cancel</button>${isAdmin() ? '<button class="btn danger" id="delRec">Delete entry</button>' : ""}<button class="btn danger" id="rejRec"><i class="fa-solid fa-ban"></i> Full rejection (vehicle)</button><button class="btn primary" id="saveK"><i class="fa-solid fa-scale-balanced"></i> Confirm Kanta &amp; add accepted to stock</button>`
+      footer: `<button class="btn" data-close>Cancel</button>${isAdmin() ? '<button class="btn danger" id="delRec">Delete entry</button>' : ""}<button class="btn danger" id="rejRec"><i class="fa-solid fa-ban"></i> Full rejection (vehicle)</button><button class="btn primary" id="saveK"><i class="fa-solid fa-scale-balanced"></i> ${isQuarantine(r) ? "Confirm Kanta → QC quarantine" : "Confirm Kanta &amp; add accepted to stock"}</button>`
     });
     const f = modal.el.querySelector("#kForm");
     const recalc = () => {
@@ -514,18 +522,19 @@ async function start() {
           const ref = doc(db, "receipts", r.id);
           const cur = normalizeReceipt({ id: r.id, ...(await tx.get(ref)).data() });
           if (cur.stage !== "KANTA PENDING") throw new Error("Kanta has already been recorded for this receipt.");
+          const quarantine = isQuarantine(cur);
           const poMap = await readPos(tx, cur.lines);
-          const stock = await readStock(tx, cur.lines.map((l) => ({ warehouse: cur.warehouse, itemId: l.itemId })));
+          const stock = quarantine ? null : await readStock(tx, cur.lines.map((l) => ({ warehouse: cur.warehouse, itemId: l.itemId })));
           const lines = cur.lines.map((l, i) => {
             const accepted = round(entered[i].kanta - entered[i].rejected);
             return { ...l, kantaQty: entered[i].kanta, rejectedQty: entered[i].rejected, acceptedQty: accepted, varianceQty: round(entered[i].kanta - n(l.grnQty)), payableQty: accepted };
           });
           const movements = lines.filter((l) => l.acceptedQty > 0).map((l) => ({ warehouse: cur.warehouse, item: { id: l.itemId, name: l.name, unit: l.unit, category: items.find((x) => x.id === l.itemId)?.category || l.category }, qty: l.acceptedQty, note: `Kanta inward ${cur.grn.grnNo} · ${l.poNo || "no PO"} · invoice ${cur.invoiceNo}${l.rejectedQty ? ` (rejected ${qty(l.rejectedQty)})` : ""}` }));
-          if (movements.length) applyMovements(tx, stock, movements, { type: "INWARD (KANTA)", id: r.id, no: cur.grn.grnNo });
+          if (movements.length && !quarantine) applyMovements(tx, stock, movements, { type: "INWARD (KANTA)", id: r.id, no: cur.grn.grnNo });
           const payableValue = round(lines.reduce((s, l) => s + l.acceptedQty * n(l.rate), 0), 2);
           const rejectedValue = round(lines.reduce((s, l) => s + l.rejectedQty * n(l.rate), 0), 2);
           tx.update(ref, {
-            stage: "COMPLETED", lines, payableValue, docs: { ...(cur.docs || {}), ...slip },
+            stage: quarantine ? "QC PENDING" : "COMPLETED", lines, payableValue, docs: { ...(cur.docs || {}), ...slip },
             kanta: { grossWeight: v.gross === "" ? null : Number(v.gross), tareWeight: v.tare === "" ? null : Number(v.tare), netWeight: v.net === "" ? null : Number(v.net), weightUnit: v.weightUnit, remark: v.remark, at: serverTimestamp(), by: by() },
             ...(partial ? {
               partialRejection: { reason: v.rejectReason, at: serverTimestamp(), by: by(), rejectedValue },
@@ -533,17 +542,100 @@ async function start() {
             } : {})
           });
           const describe = (ls) => ls.map((l) => `${l.name} Kanta ${qty(l.kantaQty)} ${l.unit}${l.varianceQty ? ` (${l.varianceQty > 0 ? "EXCESS +" : "SHORT "}${qty(l.varianceQty)} vs GRN)` : ""}${l.rejectedQty ? ` · REJECTED ${qty(l.rejectedQty)} · accepted ${qty(l.acceptedQty)}` : ""}`).join(", ");
-          updatePos(tx, poMap, lines, (l) => ({ receivedQty: l.acceptedQty, rejectedQty: l.rejectedQty, pendingKantaQty: -n(l.grnQty), varianceQty: l.varianceQty }), partial ? "KANTA / PARTIAL REJECTION" : "KANTA / INWARD",
-            (mine) => `Kanta for ${cur.grn.grnNo}: ${describe(mine)}${partial ? `. Reason: ${v.rejectReason}` : ""}`);
-          logActivity(tx, { module: "Inward", action: partial ? "KANTA / PARTIAL REJECTION" : "KANTA / INWARD", refId: r.id, refNo: cur.grn.grnNo, summary: `Kanta ${cur.geNo}/${cur.grn.grnNo}: ${describe(lines)} into ${warehouseByCode(cur.warehouse).name}. Payable ₹${money(payableValue)} (before GST)${partial ? ` · ${HOLD_TEXT} on rejected qty ₹${money(rejectedValue)} · Reason: ${v.rejectReason}` : ""}` });
+          updatePos(tx, poMap, lines, (l) => ({ [quarantine ? "qcPendingQty" : "receivedQty"]: l.acceptedQty, rejectedQty: l.rejectedQty, pendingKantaQty: -n(l.grnQty), varianceQty: l.varianceQty }), quarantine ? "KANTA → QC QUARANTINE" : partial ? "KANTA / PARTIAL REJECTION" : "KANTA / INWARD",
+            (mine) => `Kanta for ${cur.grn.grnNo}: ${describe(mine)}${quarantine ? " · held in QC quarantine (not in stock yet)" : ""}${partial ? `. Reason: ${v.rejectReason}` : ""}`);
+          logActivity(tx, { module: "Inward", action: quarantine ? "KANTA → QC QUARANTINE" : partial ? "KANTA / PARTIAL REJECTION" : "KANTA / INWARD", refId: r.id, refNo: cur.grn.grnNo, summary: `Kanta ${cur.geNo}/${cur.grn.grnNo}: ${describe(lines)} ${quarantine ? "held in QC quarantine at" : "into"} ${warehouseByCode(cur.warehouse).name}. Payable ₹${money(payableValue)} (before GST)${partial ? ` · ${HOLD_TEXT} on rejected qty ₹${money(rejectedValue)} · Reason: ${v.rejectReason}` : ""}` });
         });
-        toast(partial ? "Kanta confirmed — accepted quantity added to stock; rejected quantity on payment hold." : "Kanta confirmed — stock updated.", "ok");
+        const quarantined = isQuarantine(r);
+        toast(quarantined ? "Kanta recorded — material is in QC quarantine; it goes into stock only after QC release." : partial ? "Kanta confirmed — accepted quantity added to stock; rejected quantity on payment hold." : "Kanta confirmed — stock updated.", "ok");
+        modal.close();
+        tab = quarantined ? "QC PENDING" : "COMPLETED";
+        await load();
+      } catch (error) { reportError(error); } finally { done(); }
+    });
+    recalc();
+  }
+
+  /* ---------------- 4. QC release (quarantine → stock) ---------------- */
+  function openQc(r) {
+    const modal = openModal({
+      title: `QC release · ${r.geNo} · ${r.grn?.grnNo || ""}`,
+      size: "wide",
+      body: `${summaryGrid(r)}
+        <div class="section-title">Quantity in quarantine</div>
+        <form id="qForm" novalidate><div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th>PO</th><th class="num">Kanta</th><th class="num">In quarantine</th><th class="num" style="width:150px">QC rejected</th><th class="num">Released to stock</th><th>Unit</th></tr></thead><tbody>
+          ${r.lines.map((l, i) => `<tr data-i="${i}"><td class="strong">${esc(l.name)}</td><td class="small nowrap">${esc(l.poNo || "—")}</td><td class="num">${qty(n(l.kantaQty))}</td><td class="num">${qty(acceptedOf(l))}</td>
+            <td><input type="number" step="any" min="0" class="num" name="qr${i}" value="0" /></td><td class="num strong" data-rel>${qty(acceptedOf(l))}</td><td>${esc(l.unit)}</td></tr>`).join("")}
+        </tbody></table></div>
+        <div class="form-grid" style="margin-top:14px">
+          <label class="field span-2"><span>Test report / COA reference</span><input name="reportRef" placeholder="e.g. RM2610003 UV & M/C" /></label>
+          <label class="field span-2"><span>Remarks / results</span><input name="remarks" placeholder="e.g. UV absorbance OK, moisture 0.02%" /></label>
+          <label class="field span-2" data-why hidden><span>Reason for the QC rejected quantity <b class="req">*</b></span><input name="rejectReason" /></label>
+        </div></form>
+        <p class="small muted">Released quantity goes into <b>${esc(warehouseByCode(r.warehouse).name)}</b> RM stock and counts against the PO. QC rejected quantity never enters stock and is put on payment hold.</p>`,
+      footer: '<button class="btn" data-close>Cancel</button><button class="btn danger" id="qcRejectAll"><i class="fa-solid fa-ban"></i> QC failed — reject all</button><button class="btn primary" id="qcRelease"><i class="fa-solid fa-flask-vial"></i> Release to stock</button>'
+    });
+    const f = modal.el.querySelector("#qForm");
+    const recalc = () => {
+      let any = false;
+      r.lines.forEach((l, i) => {
+        const rj = n(f[`qr${i}`].value); if (rj > 0) any = true;
+        f.querySelector(`tr[data-i="${i}"] [data-rel]`).textContent = qty(Math.max(0, round(acceptedOf(l) - rj)));
+      });
+      f.querySelector("[data-why]").hidden = !any;
+    };
+    f.addEventListener("input", recalc);
+    modal.el.querySelector("#qcRejectAll").addEventListener("click", () => rejectReceipt(r, modal));
+    modal.el.querySelector("#qcRelease").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const v = formValues(f);
+      let qcRejected;
+      try {
+        qcRejected = r.lines.map((l, i) => {
+          const rj = f[`qr${i}`].value === "" ? 0 : Number(f[`qr${i}`].value);
+          if (!Number.isFinite(rj) || rj < 0) throw new Error(`${l.name}: QC rejected quantity must be 0 or more.`);
+          if (rj > acceptedOf(l) + 0.0005) throw new Error(`${l.name}: QC rejected quantity is more than the quantity in quarantine.`);
+          return round(rj);
+        });
+        if (qcRejected.some((x) => x > 0) && !v.rejectReason) throw new Error("Enter the reason for the QC rejected quantity.");
+        if (r.lines.every((l, i) => round(acceptedOf(l) - qcRejected[i]) <= 0)) throw new Error("Everything is rejected — use “QC failed — reject all”.");
+      } catch (error) { toast(error.message, "error"); return; }
+      const done = busy(button);
+      try {
+        await runTransaction(db, async (tx) => {
+          const ref = doc(db, "receipts", r.id);
+          const cur = normalizeReceipt({ id: r.id, ...(await tx.get(ref)).data() });
+          if (cur.stage !== "QC PENDING") throw new Error("This receipt is not in QC quarantine any more.");
+          const poMap = await readPos(tx, cur.lines);
+          const stock = await readStock(tx, cur.lines.map((l) => ({ warehouse: cur.warehouse, itemId: l.itemId })));
+          const before = cur.lines.map((l) => acceptedOf(l));
+          const lines = cur.lines.map((l, i) => {
+            const released = round(before[i] - qcRejected[i]);
+            return { ...l, qcRejectedQty: qcRejected[i], rejectedQty: round(n(l.rejectedQty) + qcRejected[i]), acceptedQty: released, payableQty: released };
+          });
+          const movements = lines.filter((l) => l.acceptedQty > 0).map((l) => ({ warehouse: cur.warehouse, item: { id: l.itemId, name: l.name, unit: l.unit, category: items.find((x) => x.id === l.itemId)?.category || l.category }, qty: l.acceptedQty, note: `QC released ${cur.grn.grnNo} · ${l.poNo || "no PO"} · invoice ${cur.invoiceNo}` }));
+          if (movements.length) applyMovements(tx, stock, movements, { type: "INWARD (QC RELEASED)", id: r.id, no: cur.grn.grnNo });
+          const rejectedValue = round(lines.reduce((s, l) => s + n(l.rejectedQty) * n(l.rate), 0), 2);
+          const result = qcRejected.some((x) => x > 0) ? "Released with partial rejection" : "Released";
+          tx.update(ref, {
+            stage: "COMPLETED", lines, payableValue: round(lines.reduce((s, l) => s + l.acceptedQty * n(l.rate), 0), 2),
+            qc: { result, reportRef: v.reportRef, remarks: v.remarks, rejectReason: v.rejectReason || "", at: serverTimestamp(), by: by() },
+            ...(qcRejected.some((x) => x > 0) ? {
+              partialRejection: { reason: [cur.partialRejection?.reason, `QC: ${v.rejectReason}`].filter(Boolean).join(" · "), at: serverTimestamp(), by: by(), rejectedValue },
+              paymentHold: { ...(cur.paymentHold || {}), active: true, scope: "PARTIAL", since: cur.paymentHold?.since || serverTimestamp(), by: cur.paymentHold?.by || by(), rejectedValue }
+            } : {})
+          });
+          const describe = (ls) => ls.map((l) => `${l.name} released ${qty(l.acceptedQty)} ${l.unit}${l.qcRejectedQty ? ` · QC rejected ${qty(l.qcRejectedQty)}` : ""}`).join(", ");
+          updatePos(tx, poMap, lines, (l) => ({ qcPendingQty: -(n(l.acceptedQty) + n(l.qcRejectedQty)), receivedQty: l.acceptedQty, rejectedQty: n(l.qcRejectedQty) }), "QC RELEASED",
+            (mine) => `QC released ${cur.grn.grnNo}: ${mine.map((l) => `${l.name} ${qty(l.acceptedQty)} ${l.unit}${l.qcRejectedQty ? ` (QC rejected ${qty(l.qcRejectedQty)})` : ""}`).join(", ")}`);
+          logActivity(tx, { module: "Inward", action: "QC RELEASED", refId: r.id, refNo: cur.grn.grnNo, summary: `QC ${result.toLowerCase()} for ${cur.geNo}/${cur.grn.grnNo}: ${describe(lines)} into ${warehouseByCode(cur.warehouse).name} stock${v.reportRef ? ` · report ${v.reportRef}` : ""}${v.rejectReason ? ` · Reason: ${v.rejectReason}` : ""}` });
+        });
+        toast("QC released — material added to stock.", "ok");
         modal.close();
         tab = "COMPLETED";
         await load();
       } catch (error) { reportError(error); } finally { done(); }
     });
-    recalc();
   }
 
   /* ---------------- Delete / reverse (admin) ---------------- */
@@ -554,10 +646,15 @@ async function start() {
       await runTransaction(db, async (tx) => {
         const ref = doc(db, "receipts", r.id);
         const cur = normalizeReceipt({ id: r.id, ...(await tx.get(ref)).data() });
-        if (!["GRN PENDING", "KANTA PENDING"].includes(cur.stage)) throw new Error("Only receipts not yet through Kanta can be deleted. Use Reverse instead.");
+        if (!["GRN PENDING", "KANTA PENDING", "QC PENDING"].includes(cur.stage)) throw new Error("Only receipts not yet in stock can be deleted. Use Reverse instead.");
         const poMap = await readPos(tx, cur.lines);
         const grnDone = cur.stage === "KANTA PENDING";
-        updatePos(tx, poMap, cur.lines, (l) => ({ invoicedQty: -n(l.invoiceQty), ...(grnDone ? { grnQty: -n(l.grnQty), pendingKantaQty: -n(l.grnQty) } : {}) }), "RECEIPT DELETED", () => `${cur.geNo} deleted. Reason: ${reason}`);
+        const inQc = cur.stage === "QC PENDING";
+        updatePos(tx, poMap, cur.lines, (l) => ({
+          invoicedQty: -n(l.invoiceQty),
+          ...(grnDone ? { grnQty: -n(l.grnQty), pendingKantaQty: -n(l.grnQty) } : {}),
+          ...(inQc ? { grnQty: -n(l.grnQty), qcPendingQty: -acceptedOf(l), rejectedQty: -n(l.rejectedQty), varianceQty: -(n(l.kantaQty) - n(l.grnQty)) } : {})
+        }), "RECEIPT DELETED", () => `${cur.geNo} deleted. Reason: ${reason}`);
         tx.update(ref, { stage: "CANCELLED", cancelReason: reason, cancelledAt: serverTimestamp(), cancelledBy: by() });
         logActivity(tx, { module: "Inward", action: "DELETE", refId: r.id, refNo: cur.geNo, summary: `Deleted ${cur.geNo} (invoice ${cur.invoiceNo}). Reason: ${reason}` });
       });
@@ -599,8 +696,8 @@ async function start() {
       await runTransaction(db, async (tx) => {
         const ref = doc(db, "receipts", r.id);
         const cur = normalizeReceipt({ id: r.id, ...(await tx.get(ref)).data() });
-        const allowed = ["GRN PENDING", "KANTA PENDING", ...(can("close") ? ["COMPLETED"] : [])];
-        if (!allowed.includes(cur.stage)) throw new Error(cur.stage === "COMPLETED" ? "Only a manager or admin can reject a receipt that is already inwarded." : `A ${receiptStageLabel(cur).toLowerCase()} receipt cannot be rejected.`);
+        const allowed = ["GRN PENDING", "KANTA PENDING", ...(can("qc") ? ["QC PENDING"] : []), ...(can("close") ? ["COMPLETED"] : [])];
+        if (!allowed.includes(cur.stage)) throw new Error(cur.stage === "COMPLETED" ? "Only a manager or admin can reject a receipt that is already inwarded." : cur.stage === "QC PENDING" ? "Only a manager or admin can reject material that is in QC." : `A ${receiptStageLabel(cur).toLowerCase()} receipt cannot be rejected.`);
         const poMap = await readPos(tx, cur.lines);
         const done = cur.stage === "COMPLETED";
         const grnDone = cur.stage !== "GRN PENDING";
@@ -613,7 +710,8 @@ async function start() {
           invoicedQty: -n(l.invoiceQty),
           ...(grnDone ? { grnQty: -n(l.grnQty) } : {}),
           ...(cur.stage === "KANTA PENDING" ? { pendingKantaQty: -n(l.grnQty) } : {}),
-          ...(done ? { receivedQty: -acceptedOf(l), varianceQty: -(n(l.kantaQty) - n(l.grnQty)), rejectedQty: acceptedOf(l) } : { rejectedQty: vehicleQty(l) })
+          ...(cur.stage === "QC PENDING" ? { qcPendingQty: -acceptedOf(l), varianceQty: -(n(l.kantaQty) - n(l.grnQty)), rejectedQty: acceptedOf(l) } : {}),
+          ...(done ? { receivedQty: -acceptedOf(l), varianceQty: -(n(l.kantaQty) - n(l.grnQty)), rejectedQty: acceptedOf(l) } : cur.stage === "QC PENDING" ? {} : { rejectedQty: vehicleQty(l) })
         }), "VEHICLE REJECTED", () => `${cur.geNo} (invoice ${cur.invoiceNo}) vehicle rejected — counted as zero received; PO quantity pending again. Reason: ${reason}`);
         tx.update(ref, {
           stage: "REJECTED", lines: cur.lines.map((l) => ({ ...l, rejectedQty: vehicleQty(l), acceptedQty: 0, payableQty: 0 })), payableValue: 0,
@@ -622,7 +720,7 @@ async function start() {
         });
         logActivity(tx, { module: "Inward", action: "VEHICLE REJECTED", refId: r.id, refNo: cur.geNo, summary: `${cur.geNo} (invoice ${cur.invoiceNo}, ${cur.vendor?.name}) VEHICLE REJECTED at ${receiptStageLabel(cur)}${done ? ` — ${cur.lines.map((l) => `−${qty(acceptedOf(l))} ${l.unit} ${l.name}`).join(", ")} removed from stock` : ""}. ${HOLD_TEXT}. Reason: ${reason}` });
       });
-      toast(`${r.geNo} marked Vehicle Rejected — payment hold.`);
+      toast(r.stage === "QC PENDING" ? `${r.geNo} rejected at QC — nothing added to stock; payment hold.` : `${r.geNo} marked Vehicle Rejected — payment hold.`);
       parentModal?.close();
       tab = "REJECTED";
       await load();
@@ -701,10 +799,12 @@ async function start() {
     const partly = isPartlyRejected(r);
     const buttons = [];
     if (canOperate && r.stage !== "CANCELLED") buttons.push('<button class="btn" id="trRec"><i class="fa-solid fa-truck"></i> Edit transport</button>');
+    if (canQc && r.stage === "QC PENDING") buttons.push('<button class="btn primary" id="qcRec"><i class="fa-solid fa-flask-vial"></i> QC release</button>');
     if (canOperate && ["GRN PENDING", "KANTA PENDING"].includes(r.stage)) buttons.push('<button class="btn danger" id="rejRec"><i class="fa-solid fa-ban"></i> Vehicle rejected</button>');
+    if (canQc && r.stage === "QC PENDING") buttons.push('<button class="btn danger" id="rejRec"><i class="fa-solid fa-ban"></i> QC failed — reject all</button>');
     if (canResolve && r.stage === "COMPLETED") buttons.push('<button class="btn danger" id="rejRec"><i class="fa-solid fa-ban"></i> Reject after Kanta (reverse stock)</button>');
     if (canResolve && isOnHold(r)) buttons.push('<button class="btn gold" id="resolveHold"><i class="fa-solid fa-unlock"></i> Resolve payment hold</button>');
-    if (isAdmin() && ["GRN PENDING", "KANTA PENDING"].includes(r.stage)) buttons.push('<button class="btn danger" id="delRec">Delete entry</button>');
+    if (isAdmin() && ["GRN PENDING", "KANTA PENDING", "QC PENDING"].includes(r.stage)) buttons.push('<button class="btn danger" id="delRec">Delete entry</button>');
     if (isAdmin() && r.stage === "COMPLETED") buttons.push('<button class="btn danger" id="revRec">Reverse inward</button>');
     const holdLine = (what) => (isOnHold(r) ? `<br><b>${HOLD_TEXT}</b>: accounts must not pay ${what} of supplier invoice ${esc(r.invoiceNo)}. This is an instruction for accounts; it does not block payment in Tally.` : `<br>Hold resolved by ${esc(r.paymentHold?.resolvedBy?.name)} on ${fmtDateTime(r.paymentHold?.resolvedAt)} — ${esc(r.paymentHold?.resolution)}`);
     const modal = openModal({
@@ -727,6 +827,8 @@ async function start() {
             <td class="num strong">${accepted === null ? "—" : qty(accepted)}</td><td class="num">${accepted !== null && l.rate ? money(accepted * l.rate) : "—"}</td></tr>`;
         }).join("")}
         </tbody></table></div>
+        ${r.stage === "QC PENDING" ? `<div class="notice" style="margin-top:12px"><i class="fa-solid fa-flask"></i><div><b>In QC quarantine</b> — weighed on the Kanta but <b>not in stock</b>. A manager / admin releases it (or rejects it) after testing.</div></div>` : ""}
+        ${r.qc ? `<div class="section-title">QC release</div><div class="detail-grid"><div><span>Result</span><b>${esc(r.qc.result)}</b></div><div><span>By</span><b>${esc(r.qc.by?.name)} · ${fmtDateTime(r.qc.at)}</b></div><div><span>Test / COA ref.</span><b>${esc(r.qc.reportRef || "—")}</b></div><div><span>Remarks</span><b>${esc(r.qc.remarks || "—")}</b></div></div>` : ""}
         ${r.kanta ? `<div class="section-title">Kanta</div><div class="detail-grid"><div><span>Gross / Tare / Net</span><b>${qty(r.kanta.grossWeight ?? 0)} / ${qty(r.kanta.tareWeight ?? 0)} / ${qty(r.kanta.netWeight ?? 0)} ${esc(r.kanta.weightUnit || "")}</b></div><div><span>By</span><b>${esc(r.kanta.by?.name)} · ${fmtDateTime(r.kanta.at)}</b></div><div><span>Remark</span><b>${esc(r.kanta.remark || "—")}</b></div></div>` : ""}
         ${r.grn ? `<div class="section-title">GRN</div><div class="detail-grid"><div><span>GRN No.</span><b>${esc(r.grn.grnNo)}</b></div><div><span>QC</span><b>${esc(r.grn.qc || "—")}</b></div><div><span>Batch</span><b>${esc(r.grn.batchNo || "—")}</b></div><div><span>Remark</span><b>${esc(r.grn.remark || "—")}</b></div></div>` : ""}
         ${r.transportUpdatedBy ? `<p class="small muted">Transport last edited by ${esc(r.transportUpdatedBy.name)} on ${fmtDateTime(r.transportUpdatedAt)}.</p>` : ""}
@@ -734,6 +836,7 @@ async function start() {
       footer: `<button class="btn" data-close>Close</button>${buttons.join("")}`
     });
     modal.el.querySelector("#trRec")?.addEventListener("click", () => editTransport(r, modal));
+    modal.el.querySelector("#qcRec")?.addEventListener("click", () => { modal.close(); openQc(r); });
     modal.el.querySelector("#rejRec")?.addEventListener("click", () => rejectReceipt(r, modal));
     modal.el.querySelector("#resolveHold")?.addEventListener("click", () => resolveHold(r, modal));
     modal.el.querySelector("#delRec")?.addEventListener("click", () => deleteReceipt(r, modal));

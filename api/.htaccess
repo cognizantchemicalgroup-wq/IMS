@@ -1,0 +1,22 @@
+# CCPL ERP - API Security Configuration
+Options -Indexes
+
+# Protect sensitive files
+<FilesMatch "(\.env.*|\.json|config\.local\.php)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Only allow direct execution of specific endpoint scripts
+<FilesMatch "^(config|firebase|mailer|otp-service)\.php$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</FilesMatch>

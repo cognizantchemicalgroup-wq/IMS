@@ -37,6 +37,11 @@ export function computeExceptions({ pos = [], receipts = [], adjustments = [], c
       rows: recs.filter((r) => r.stage === "KANTA PENDING").map((r) => ({ ref: r.grn?.grnNo || r.geNo, href: "inward.html#kanta", text: `${r.vendor?.name} — ${r.lines.map((l) => `${l.name} ${qty(l.grnQty)} ${l.unit}`).join(", ")}`, meta: `${r.poNo || "Without PO"} · GRN ${fmtDate(r.grn?.at)}`, days: daysSince(r.grn?.at) }))
     },
     {
+      key: "qc-quarantine", title: "Awaiting QC release (quarantine)", icon: "fa-flask", tone: "amber",
+      help: "Weighed on the Kanta but held in quarantine — not in stock until a manager / admin releases it after testing.",
+      rows: recs.filter((r) => r.stage === "QC PENDING").map((r) => ({ ref: r.grn?.grnNo || r.geNo, href: "inward.html", text: `${r.vendor?.name} — ${r.lines.map((l) => `${l.name} ${qty(acceptedOf(l))} ${l.unit}`).join(", ")}`, meta: `${r.poNo || "Without PO"} · Kanta ${fmtDate(r.kanta?.at)}`, days: daysSince(r.kanta?.at) }))
+    },
+    {
       key: "invoice-waiting-grn", title: "Invoice waiting for GRN", icon: "fa-file-invoice", tone: "amber",
       help: "Invoice / gate entry made but GRN not recorded yet.",
       rows: recs.filter((r) => r.stage === "GRN PENDING").map((r) => ({ ref: r.geNo, href: "inward.html", text: `${r.vendor?.name} — invoice ${r.invoiceNo}: ${r.lines.map((l) => `${l.name} ${qty(l.invoiceQty)} ${l.unit}`).join(", ")}`, meta: r.poNo || "Without PO", days: daysSince(r.createdAt) }))

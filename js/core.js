@@ -47,7 +47,9 @@ export const DEFAULT_COMPANY = {
     "Subject to Raigad jurisdiction."
   ].join("\n"),
   poTolerancePct: 0.5,
-  poOverdueDays: 15
+  poOverdueDays: 15,
+  // Optional QC quarantine: when on, GRN defaults to "Pending QC" and material stays out of stock until QC release.
+  qcQuarantine: false
 };
 
 export const DEFAULT_WAREHOUSES = [
@@ -94,10 +96,11 @@ export const NUMBER_FORMATS = {
   ST: "ST/{FY}/{SEQ}",
   ADJ: "ADJ/{FY}/{SEQ}",
   OS: "OS/{FY}/{SEQ}",
+  PR: "CCPL/PR/{FY}/{SEQ}",
   PI: "CCPL/PI/{FY}/{SEQ}"
 };
-export const NUMBER_PAD = { POPH: 3, POM: 2, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4, PI: 3 };
-export const NUMBER_LABELS = { POPH: "Purchase Order · PH series", POM: "Purchase Order · Monthly series", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock", PI: "Proforma Invoice" };
+export const NUMBER_PAD = { POPH: 3, POM: 2, QT: 3, SO: 3, GE: 4, GRN: 4, DC: 4, ST: 4, ADJ: 4, OS: 4, PR: 4, PI: 3 };
+export const NUMBER_LABELS = { POPH: "Purchase Order · PH series", POM: "Purchase Order · Monthly series", QT: "Quotation", SO: "Sales Order", GE: "Invoice / Gate Entry", GRN: "GRN", DC: "Delivery Challan", ST: "Stock Transfer", ADJ: "Write-off / Adjustment", OS: "Opening Stock", PR: "Process · RM → Ready", PI: "Proforma Invoice" };
 
 /** Number types that share one duplicate-check registry (a PO number can never repeat across the two PO series). */
 const NUMBER_FAMILY = { POPH: "PO", POM: "PO" };
@@ -123,7 +126,7 @@ export const isSuperAdmin = () => (state.user?.email || "").toLowerCase() === SU
 // viewer   – read only
 const PERMISSIONS = {
   admin: ["*"],
-  manager: ["commercial", "operations", "masters", "close", "warehouses"],
+  manager: ["commercial", "operations", "masters", "close", "warehouses", "qc"],
   operator: ["operations", "masters"],
   viewer: []
 };
@@ -316,7 +319,7 @@ export function badge(status) {
     SENT: "blue", ACCEPTED: "green", REJECTED: "red", CONVERTED: "indigo", EXPIRED: "gray",
     "PARTIALLY DISPATCHED": "amber", "KANTA PENDING": "amber", "GRN PENDING": "blue", "IN TRANSIT": "amber", RECEIVED: "green",
     POSTED: "green", REVERSED: "red", ACTIVE: "green", INACTIVE: "gray",
-    ISSUED: "blue", PAID: "green", OVERDUE: "red", INWARDED: "green", "INWARDED · PART REJECTED": "amber", "CLOSED WITH BALANCE": "gold", "SERVICE COMPLETED": "green", GOODS: "blue", SERVICE: "indigo", "VEHICLE REJECTED": "red", "PAYMENT HOLD — REJECTED INWARD": "red", "HOLD RESOLVED": "gray",
+    ISSUED: "blue", PAID: "green", OVERDUE: "red", INWARDED: "green", "INWARDED · PART REJECTED": "amber", "CLOSED WITH BALANCE": "gold", "AWAITING QC": "indigo", "QC PENDING": "indigo", "QC PENDING (QUARANTINE)": "indigo", RM: "gray", READY: "green", "SERVICE COMPLETED": "green", GOODS: "blue", SERVICE: "indigo", "VEHICLE REJECTED": "red", "PAYMENT HOLD — REJECTED INWARD": "red", "HOLD RESOLVED": "gray",
     CUSTOMER: "blue", SUPPLIER: "indigo", BOTH: "gold"
   };
   return `<span class="badge ${map[status] || "gray"}">${esc(status)}</span>`;
@@ -469,12 +472,20 @@ export function commitNumber(tx, reservation, refId = "") {
 /* ------------------------------------------------------------------ */
 /* Stock engine (inside transactions)                                   */
 /* ------------------------------------------------------------------ */
-export const stockId = (warehouse, itemId) => `${warehouse}__${itemId}`;
+/**
+ * Stock stage: the same product can be held as RM (purchased / raw) or Ready (processed, ready to sell).
+ * Inward always lands in RM; "Process RM → Ready" moves it. Packaging is always kept as RM (one bucket).
+ * RM stock keeps the original document id (warehouse__item), Ready stock uses warehouse__item__READY.
+ */
+export const STOCK_STAGES = { RM: "RM", READY: "Ready" };
+export const stageOf = (stage) => (stage === "READY" ? "READY" : "RM");
+export const stageLabel = (stage) => STOCK_STAGES[stageOf(stage)];
+export const stockId = (warehouse, itemId, stage = "RM") => (stageOf(stage) === "READY" ? `${warehouse}__${itemId}__READY` : `${warehouse}__${itemId}`);
 
-/** Read phase: fetch stock balances for all (warehouse,item) pairs. */
+/** Read phase: fetch stock balances for all (warehouse,item,stage) pairs. */
 export async function readStock(tx, pairs) {
-  const unique = [...new Map(pairs.map((p) => [stockId(p.warehouse, p.itemId), p])).values()];
-  const snaps = await Promise.all(unique.map((p) => tx.get(doc(db, "inventory", stockId(p.warehouse, p.itemId)))));
+  const unique = [...new Map(pairs.map((p) => [stockId(p.warehouse, p.itemId, p.stage), p])).values()];
+  const snaps = await Promise.all(unique.map((p) => tx.get(doc(db, "inventory", stockId(p.warehouse, p.itemId, p.stage)))));
   const map = new Map();
   snaps.forEach((snap) => map.set(snap.id, snap.exists() ? snap.data() : null));
   return map;
@@ -488,11 +499,11 @@ export async function readStock(tx, pairs) {
 export function applyMovements(tx, stockMap, movements, ref) {
   const balances = new Map();
   movements.forEach((m) => {
-    const id = stockId(m.warehouse, m.item.id);
+    const id = stockId(m.warehouse, m.item.id, m.stage);
     const current = balances.has(id) ? balances.get(id) : Number(stockMap.get(id)?.qty || 0);
     const next = round(current + Number(m.qty), 3);
     if (next < -0.0005) {
-      throw new Error(`Insufficient stock of ${m.item.name} at ${warehouseByCode(m.warehouse).name}. Available ${qty(current)} ${m.item.unit}, required ${qty(Math.abs(m.qty))} ${m.item.unit}.`);
+      throw new Error(`Insufficient ${m.item.category === "Packaging" ? "" : `${stageLabel(m.stage)} `}stock of ${m.item.name} at ${warehouseByCode(m.warehouse).name}. Available ${qty(current)} ${m.item.unit}, required ${qty(Math.abs(m.qty))} ${m.item.unit}.`);
     }
     balances.set(id, Math.max(0, next));
     const ledgerRef = doc(collection(db, "stockLedger"));
@@ -503,6 +514,7 @@ export function applyMovements(tx, stockMap, movements, ref) {
       itemName: m.item.name,
       unit: m.item.unit,
       category: m.item.category || "",
+      stage: stageOf(m.stage),
       qtyIn: m.qty > 0 ? round(m.qty) : 0,
       qtyOut: m.qty < 0 ? round(-m.qty) : 0,
       balance: Math.max(0, next),
@@ -515,13 +527,14 @@ export function applyMovements(tx, stockMap, movements, ref) {
     });
   });
   balances.forEach((balance, id) => {
-    const m = movements.find((mv) => stockId(mv.warehouse, mv.item.id) === id);
+    const m = movements.find((mv) => stockId(mv.warehouse, mv.item.id, mv.stage) === id);
     tx.set(doc(db, "inventory", id), {
       warehouse: m.warehouse,
       itemId: m.item.id,
       itemName: m.item.name,
       unit: m.item.unit,
       category: m.item.category || "",
+      stage: stageOf(m.stage),
       qty: balance,
       updatedAt: serverTimestamp()
     }, { merge: true });
@@ -574,6 +587,7 @@ const NAV = [
   { group: "Admin", items: [
     ["activity", "activity.html", "fa-clock-rotate-left", "Activity Log"],
     ["access", "access.html", "fa-user-shield", "Access Audit", "superadmin"],
+    ["data", "data-admin.html", "fa-database", "Backup & Reset", "superadmin"],
     ["settings", "settings.html", "fa-gear", "Settings & Users"]
   ] }
 ];
@@ -645,6 +659,7 @@ async function endSession(reason) {
 
 export async function logout(reason = "logout") {
   await endSession(typeof reason === "string" ? reason : "logout");
+  try { await fetch("api/logout.php", { method: "POST" }); } catch { /* ignore network error on logout */ }
   await signOut(auth);
   window.location.replace("index.html");
 }
@@ -669,9 +684,15 @@ function startIdleTimer() {
 export function initPage(pageKey, { permission = null, superAdminOnly = false } = {}) {
   document.body.innerHTML = '<div class="boot"><div><i class="fa-solid fa-spinner fa-spin"></i> Loading CCPL ERP…</div></div>';
   return new Promise((resolve) => {
-    const stop = onAuthStateChanged(auth, async (user) => {
-      stop();
-      if (!user) { window.location.replace("index.html"); return; }
+    let stop;
+    stop = onAuthStateChanged(auth, async (user) => {
+      if (typeof stop === "function") stop();
+      if (!user) {
+        const p = window.location.pathname;
+        if (p === "/" || p.endsWith("index.html") || p.endsWith("/index")) return;
+        window.location.replace("index.html");
+        return;
+      }
       try {
         const profileSnap = await getDoc(doc(db, "users", user.uid));
         if (!profileSnap.exists() || profileSnap.data().active !== true) {
@@ -724,12 +745,13 @@ export function deriveOrderStatus(order, doneKey, tolerancePct = 0) {
     return lines.some((l) => n(l[doneKey]) > 0) ? "PARTIALLY DISPATCHED" : "OPEN";
   }
   if (lines.some((l) => n(l.pendingKantaQty) > 0.0005)) return "AWAITING KANTA";
+  if (lines.some((l) => n(l.qcPendingQty) > 0.0005)) return "AWAITING QC";
   if (lines.some((l) => n(l.receivedQty) > 0)) return "PARTIALLY INWARDED";
   if (lines.some((l) => n(l.invoicedQty) > 0 || n(l.grnQty) > 0)) return "PARTIALLY RECEIVED";
   return "OPEN";
 }
 
-export const OPEN_PO_STATUSES = ["OPEN", "PARTIALLY RECEIVED", "AWAITING KANTA", "PARTIALLY INWARDED"];
+export const OPEN_PO_STATUSES = ["OPEN", "PARTIALLY RECEIVED", "AWAITING KANTA", "AWAITING QC", "PARTIALLY INWARDED"];
 /** Closed before everything arrived: the unreceived balance is kept as history, not as pending. */
 export const CLOSED_PO_STATUSES = ["CLOSED WITH BALANCE", "CLOSED", "SHORT CLOSED"];
 export const isServicePo = (po) => po?.poType === "SERVICE";
@@ -744,11 +766,13 @@ export const isServicePo = (po) => po?.poType === "SERVICE";
 export function poLineQty(l, status = "") {
   const v = (x) => { const k = Number(x); return Number.isFinite(k) ? k : 0; };
   const ordered = v(l.qty); const invoiced = v(l.invoicedQty); const grn = v(l.grnQty); const awaitingKanta = v(l.pendingKantaQty);
-  const shortExcess = round(v(l.varianceQty)); const accepted = v(l.receivedQty); const rejected = v(l.rejectedQty);
+  const shortExcess = round(v(l.varianceQty)); const accepted = v(l.receivedQty); const rejected = v(l.rejectedQty); const qcPending = v(l.qcPendingQty);
   const kanta = round(grn - awaitingKanta + shortExcess);
   const closedBalance = CLOSED_PO_STATUSES.includes(status) ? (l.closedBalanceQty !== undefined ? v(l.closedBalanceQty) : Math.max(0, round(ordered - accepted))) : 0;
   const pending = CLOSED_PO_STATUSES.includes(status) || status === "CANCELLED" ? 0 : Math.max(0, round(ordered - accepted));
-  return { ordered, invoiced, grn, kanta, shortExcess, accepted, rejected, awaitingKanta, closedBalance, pending };
+  // invoiced but not yet through GRN (excludes rejected vehicles, whose invoice qty is reversed)
+  const awaitingGrn = Math.max(0, round(invoiced - grn));
+  return { ordered, invoiced, grn, kanta, shortExcess, accepted, rejected, awaitingKanta, qcPending, awaitingGrn, closedBalance, pending };
 }
 /** Signed difference for display: "0", "+5", "-3". Never "null" / "NaN". */
 export function fmtDiff(value) {
@@ -794,6 +818,7 @@ export function accountsStatus(r) {
   }
   if (r.stage === "COMPLETED") return { label: "Payable as per Kanta", tone: "green", help: "Enter in Tally using the Kanta (payable) quantity." };
   if (r.stage === "CANCELLED") return { label: "Cancelled — nothing payable", tone: "gray", help: "" };
+  if (r.stage === "QC PENDING") return { label: "Not payable yet (awaiting QC release)", tone: "amber", help: "Material is in quarantine; it is not in stock until QC releases it." };
   return { label: "Not payable yet (awaiting GRN / Kanta)", tone: "amber", help: "Wait for Kanta before booking in Tally." };
 }
 export function accountsBadge(r) {
@@ -801,5 +826,5 @@ export function accountsBadge(r) {
   return `<span class="badge ${s.tone}" title="${esc(s.help)}">${esc(s.label)}</span>`;
 }
 /** Stage label shown to users. */
-export const receiptStageLabel = (r) => (r.stage === "COMPLETED" ? (isPartlyRejected(r) ? "INWARDED · PART REJECTED" : "INWARDED") : r.stage === "REJECTED" ? "VEHICLE REJECTED" : r.stage);
+export const receiptStageLabel = (r) => (r.stage === "COMPLETED" ? (isPartlyRejected(r) ? "INWARDED · PART REJECTED" : "INWARDED") : r.stage === "REJECTED" ? "VEHICLE REJECTED" : r.stage === "QC PENDING" ? "QC PENDING (QUARANTINE)" : r.stage);
 export const transportText = (r) => (r.transportMode ? `${TRANSPORT_MODES[r.transportMode] || r.transportMode}${Number.isFinite(r.transportAmount) && r.transportAmount !== null ? ` · ₹${money(r.transportAmount)}` : ""}` : "—");

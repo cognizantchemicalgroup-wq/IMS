@@ -6,3 +6,6 @@ test-results/
 tests/output/
 *.log
 .firebase/
+vendor/
+.env
+api/config.local.php

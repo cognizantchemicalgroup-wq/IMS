@@ -52,6 +52,7 @@ async function start() {
         <label class="field"><span>IFSC</span><input name="bankIfsc" value="${esc(c.bankIfsc)}" /></label>
         <label class="field"><span>Branch</span><input name="bankBranch" value="${esc(c.bankBranch)}" /></label>
         <label class="field"><span>PO auto-complete tolerance %</span><input type="number" step="any" min="0" max="10" name="poTolerancePct" value="${esc(c.poTolerancePct ?? 0)}" /><small class="help">e.g. 0.5 → a 20 MT PO auto-completes at 19.9 MT</small></label>
+        <label class="field span-2"><span>QC quarantine after Kanta</span><select name="qcQuarantine"><option value="false">Off — Kanta adds stock directly (QC hold can still be chosen on a GRN)</option><option value="true" ${c.qcQuarantine ? "selected" : ""}>On — every GRN defaults to "Pending QC"; stock only after QC release</option></select><small class="help">When a GRN is held for QC, the weighed material is kept out of stock until a manager / admin releases it.</small></label>
         <label class="field"><span>Flag PO as "pending too long" after (days)</span><input type="number" step="1" min="1" name="poOverdueDays" value="${esc(c.poOverdueDays ?? 15)}" /><small class="help">Shown under Exceptions</small></label>
         <label class="field span-all"><span>Default PO terms & conditions</span><textarea name="poTerms" rows="6">${esc(c.poTerms)}</textarea></label>
         <label class="field span-2"><span>Default quotation terms</span><textarea name="quoteTerms" rows="5">${esc(c.quoteTerms)}</textarea></label>
@@ -162,7 +163,7 @@ async function start() {
   page.querySelector("#coForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     const v = formValues(e.target);
-    const data = { ...v, addressLines: v.addressLines.split("\n").map((s) => s.trim()).filter(Boolean), poTolerancePct: Number(v.poTolerancePct) || 0, poOverdueDays: Number(v.poOverdueDays) || 15, updatedAt: serverTimestamp() };
+    const data = { ...v, addressLines: v.addressLines.split("\n").map((s) => s.trim()).filter(Boolean), poTolerancePct: Number(v.poTolerancePct) || 0, poOverdueDays: Number(v.poOverdueDays) || 15, qcQuarantine: v.qcQuarantine === "true", updatedAt: serverTimestamp() };
     const done = busy(e.submitter);
     try {
       const batch = writeBatch(db);
@@ -211,7 +212,7 @@ async function start() {
       const numberFormats = { ...(state.company.numberFormats || {}), [k]: format };
       const numberPads = { ...(state.company.numberPads || {}), [k]: pad };
       await runTransaction(db, async (tx) => {
-        tx.set(doc(db, "counters", `${k}_${period}`), { next, type: k, fy: period, updatedAt: serverTimestamp() }, { merge: true });
+        tx.set(doc(db, "counters", `${k}_${period}`), { next, setNext: next, type: k, fy: period, updatedAt: serverTimestamp() }, { merge: true });
         tx.set(doc(db, "settings", "company"), { numberFormats, numberPads, updatedAt: serverTimestamp() }, { merge: true });
         logActivity(tx, { module: "Settings", action: "NUMBERING", refNo: k, summary: `${NUMBER_LABELS[k]} numbering: format ${format}, ${pad} digits, next ${preview} (${periodLabel})` });
       });

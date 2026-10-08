@@ -3,7 +3,7 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, qty, fmtDate, fmtDateTime, isoDate, round, reserveNumber, commitNumber,
-  warehouseByCode, warehouseOptions, readStock, applyMovements, exportExcel, stockId
+  warehouseByCode, warehouseOptions, readStock, applyMovements, exportExcel, stockId, stageOf, stageLabel
 } from "./core.js";
 import { collection, doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { uploadFiles, docLinks } from "./uploads.js";
@@ -38,12 +38,17 @@ async function start() {
     [adjustments, items, stock] = await Promise.all([listCollection("adjustments", "createdAt", "desc"), listCollection("items"), listCollection("inventory")]);
     render();
   }
-  const available = (wh, itemId) => Number(stock.find((s) => s.id === stockId(wh, itemId))?.qty || 0);
+  const available = (wh, itemId, stage = "RM") => Number(stock.find((s) => s.id === stockId(wh, itemId, stage))?.qty || 0);
+  // item + stock stage (RM / Ready) as one option; packaging has a single stock
+  const choices = (wh, excess) => items.filter((i) => i.active !== false && i.category !== "Service")
+    .flatMap((i) => (i.category === "Packaging" ? ["RM"] : ["RM", "READY"]).map((st) => ({ i, st, avail: wh ? available(wh, i.id, st) : 0 })))
+    .filter((c) => excess || c.avail > 0);
+  const choiceLabel = (c) => `${c.i.name}${c.i.category === "Packaging" ? "" : ` · ${stageLabel(c.st)}`} (${c.i.category})`;
 
   page.addEventListener("click", (e) => { const d = e.target.closest("[data-del]"); if (d) removeAdjustment(adjustments.find((a) => a.id === d.dataset.del)); });
   page.querySelector("#exportBtn").addEventListener("click", () => {
     if (!adjustments.length) { toast("Nothing to export."); return; }
-    exportExcel(adjustments.map((a) => ({ No: a.adjNo, Date: fmtDate(a.date), Warehouse: warehouseByCode(a.warehouse).name, Type: a.type, Item: a.item.name, Qty: a.qty, Unit: a.item.unit, Reason: a.reason, Status: a.status, By: a.createdBy?.name, At: fmtDateTime(a.createdAt) })), `CCPL_Stock_Adjustments_${isoDate()}.xlsx`, "Adjustments");
+    exportExcel(adjustments.map((a) => ({ No: a.adjNo, Date: fmtDate(a.date), Warehouse: warehouseByCode(a.warehouse).name, Type: a.type, Item: a.item.name, Stock: a.item.category === "Packaging" ? "Packaging" : stageLabel(a.stage), Qty: a.qty, Unit: a.item.unit, Reason: a.reason, Status: a.status, By: a.createdBy?.name, At: fmtDateTime(a.createdAt) })), `CCPL_Stock_Adjustments_${isoDate()}.xlsx`, "Adjustments");
   });
   page.querySelector("#newAdj")?.addEventListener("click", openNew);
 
@@ -67,20 +72,21 @@ async function start() {
     const refreshItems = () => {
       const wh = f.warehouse.value;
       const excess = TYPES.find(([t]) => t === f.type.value)[1] > 0;
-      const list = items.filter((i) => i.active !== false && i.category !== "Service" && (excess || (wh && available(wh, i.id) > 0)));
-      f.itemId.innerHTML = `<option value="">${wh ? "Select item…" : "Select warehouse first"}</option>${wh ? list.map((i) => `<option value="${esc(i.id)}">${esc(i.name)} (${esc(i.category)})</option>`).join("") : ""}`;
+      f.itemId.innerHTML = `<option value="">${wh ? "Select item…" : "Select warehouse first"}</option>${wh ? choices(wh, excess).map((c) => `<option value="${esc(c.i.id)}|${c.st}">${esc(choiceLabel(c))}</option>`).join("") : ""}`;
       f.avail.value = "";
     };
     f.warehouse.addEventListener("change", refreshItems);
     f.type.addEventListener("change", refreshItems);
-    f.itemId.addEventListener("change", () => { const it = items.find((i) => i.id === f.itemId.value); f.avail.value = it ? `${qty(available(f.warehouse.value, it.id))} ${it.unit}` : ""; });
+    f.itemId.addEventListener("change", () => { const [id, st] = f.itemId.value.split("|"); const it = items.find((i) => i.id === id); f.avail.value = it ? `${qty(available(f.warehouse.value, it.id, st))} ${it.unit}` : ""; });
     refreshItems();
     modal.el.querySelector("#saveA").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       const v = formValues(f);
       const sign = TYPES.find(([t]) => t === v.type)[1];
       const q = Number(v.qty);
-      const item = items.find((i) => i.id === v.itemId);
+      const [pickedId, pickedStage] = String(v.itemId || "").split("|");
+      const item = items.find((i) => i.id === pickedId);
+      const stage = stageOf(pickedStage);
       if (!v.warehouse || !item) { toast("Select the warehouse and item.", "error"); return; }
       if (!Number.isFinite(q) || q <= 0) { toast("Enter a quantity greater than 0.", "error"); return; }
       if (!v.reason) { toast("Enter the reason.", "error"); return; }
@@ -90,12 +96,12 @@ async function start() {
         const ref = doc(collection(db, "adjustments"));
         const docs = await uploadFiles(`adjustments/${ref.id}`, { attachment: f.file.files[0] });
         const adjNo = await runTransaction(db, async (tx) => {
-          const stockMap = await readStock(tx, [{ warehouse: v.warehouse, itemId: item.id }]);
+          const stockMap = await readStock(tx, [{ warehouse: v.warehouse, itemId: item.id, stage }]);
           const number = await reserveNumber(tx, "ADJ", { date: v.date });
           commitNumber(tx, number, ref.id);
           const it = { id: item.id, name: item.name, unit: item.unit, category: item.category };
-          applyMovements(tx, stockMap, [{ warehouse: v.warehouse, item: it, qty: sign * q, note: `${v.type}: ${v.reason}` }], { type: "ADJUSTMENT", id: ref.id, no: number.number });
-          tx.set(ref, { adjNo: number.number, date: v.date, warehouse: v.warehouse, type: v.type, item: it, qty: round(sign * q), reason: v.reason, docs, status: "POSTED", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
+          applyMovements(tx, stockMap, [{ warehouse: v.warehouse, stage, item: it, qty: sign * q, note: `${v.type}: ${v.reason}` }], { type: "ADJUSTMENT", id: ref.id, no: number.number });
+          tx.set(ref, { adjNo: number.number, date: v.date, warehouse: v.warehouse, stage, type: v.type, item: it, qty: round(sign * q), reason: v.reason, docs, status: "POSTED", createdAt: serverTimestamp(), createdBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
           logActivity(tx, { module: "Stock Adjustment", action: sign < 0 ? "WRITE-OFF" : "ADJUST IN", refId: ref.id, refNo: number.number, summary: `${number.number} ${v.type}: ${sign < 0 ? "−" : "+"}${qty(q)} ${item.unit} ${item.name} at ${warehouseByCode(v.warehouse).name}. ${v.reason}` });
           return number.number;
         });
@@ -114,8 +120,8 @@ async function start() {
         const ref = doc(db, "adjustments", a.id);
         const cur = (await tx.get(ref)).data();
         if (cur.status !== "POSTED") throw new Error("Already reversed.");
-        const stockMap = await readStock(tx, [{ warehouse: cur.warehouse, itemId: cur.item.id }]);
-        applyMovements(tx, stockMap, [{ warehouse: cur.warehouse, item: cur.item, qty: -cur.qty, note: `Reversal of ${cur.adjNo}: ${reason}` }], { type: "ADJUSTMENT REVERSAL", id: a.id, no: cur.adjNo });
+        const stockMap = await readStock(tx, [{ warehouse: cur.warehouse, itemId: cur.item.id, stage: cur.stage }]);
+        applyMovements(tx, stockMap, [{ warehouse: cur.warehouse, stage: cur.stage, item: cur.item, qty: -cur.qty, note: `Reversal of ${cur.adjNo}: ${reason}` }], { type: "ADJUSTMENT REVERSAL", id: a.id, no: cur.adjNo });
         tx.update(ref, { status: "REVERSED", reverseReason: reason, reversedAt: serverTimestamp(), reversedBy: { uid: state.user.uid, name: state.profile.name || state.user.email } });
         logActivity(tx, { module: "Stock Adjustment", action: "DELETE", refId: a.id, refNo: cur.adjNo, summary: `Deleted/reversed ${cur.adjNo} (${cur.type} ${qty(cur.qty)} ${cur.item.unit} ${cur.item.name}). Reason: ${reason}` });
       });
