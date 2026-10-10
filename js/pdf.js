@@ -1,6 +1,6 @@
 // Premium, vector (selectable-text) PDF documents rendered with pdfmake:
 // Purchase Order, Quotation, Sales Order and Delivery Challan.
-import { state, loadScript, money, qty, fmtDate, amountInWords, openModal, downloadBlob, esc, toast } from "./core.js";
+import { state, loadScript, money, qty, fmtDate, amountInWords, openModal, downloadBlob, esc, toast } from "./core.js?v=20261010b";
 
 const C = { brand: "#2a1f9d", ink: "#15123f", gold: "#b08d3c", soft: "#eeecfb", line: "#cfcde0", zebra: "#f7f7fb", muted: "#6b6a80" };
 

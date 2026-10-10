@@ -1058,7 +1058,7 @@ try {
   await page.screenshot({ path: path.join(OUT, "08-exceptions.png"), fullPage: true });
   check(await page.locator('.nav-link[href="access.html"]').count() === 0, "Access Audit is hidden from other admins");
   const deniedSessions = await page.evaluate(async () => {
-    const { db } = await import("./js/firebase-config.js");
+    const { db } = await import("./js/firebase-config.js?v=20261010b");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     try { await fs.getDocs(fs.collection(db, "sessions")); return "allowed"; } catch (e) { return e.code; }
   });
@@ -1090,7 +1090,7 @@ try {
   await goto("warehouses.html");
   check(await page.locator("#addWh").count() === 0 && await page.locator("[data-edit]").count() === 0 && await page.locator("[data-view]").count() > 0, "operator can view warehouse details but cannot create or rename");
   const denied = await page.evaluate(async () => {
-    const { db } = await import("./js/firebase-config.js");
+    const { db } = await import("./js/firebase-config.js?v=20261010b");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const results = {};
     const tryIt = async (name, fn) => { try { await fn(); results[name] = "allowed"; } catch (e) { results[name] = e.code; } };
@@ -1100,7 +1100,7 @@ try {
     await tryIt("editActivity", () => fs.updateDoc(act.docs[0].ref, { summary: "tampered" }));
     await tryIt("deleteActivity", () => fs.deleteDoc(act.docs[0].ref));
     await tryIt("negativeStock", () => fs.setDoc(fs.doc(db, "inventory", "TALOJA__x"), { qty: -5 }));
-    await tryIt("makeMeAdmin", async () => { const { auth } = await import("./js/firebase-config.js"); await fs.updateDoc(fs.doc(db, "users", auth.currentUser.uid), { role: "admin" }); });
+    await tryIt("makeMeAdmin", async () => { const { auth } = await import("./js/firebase-config.js?v=20261010b"); await fs.updateDoc(fs.doc(db, "users", auth.currentUser.uid), { role: "admin" }); });
     await tryIt("readOldCollection", () => fs.getDocs(fs.collection(db, "inward")));
     const someOpen = await fs.getDocs(fs.query(fs.collection(db, "purchaseOrders"), fs.where("status", "==", "PARTIALLY INWARDED"), fs.limit(1)));
     await tryIt("closePoWithBalance", () => fs.updateDoc(someOpen.docs[0].ref, { status: "CLOSED WITH BALANCE" }));
@@ -1115,7 +1115,7 @@ try {
   await login("outsider@evil.test", "Outsider#12345");
   await page.waitForTimeout(1500);
   const outsiderRead = await page.evaluate(async () => {
-    const { db, auth } = await import("./js/firebase-config.js");
+    const { db, auth } = await import("./js/firebase-config.js?v=20261010b");
     const { signInWithEmailAndPassword } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     await signInWithEmailAndPassword(auth, "outsider@evil.test", "Outsider#12345");

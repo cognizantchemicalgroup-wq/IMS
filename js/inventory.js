@@ -5,9 +5,9 @@ import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, listCollection, qty, fmtDate, fmtDateTime, isoDate, round, busy, formValues, can, isAdmin,
   activeWarehouses, warehouseByCode, warehouseOptions, exportExcel, ITEM_CATEGORIES, reserveNumber, commitNumber, readStock, applyMovements, logActivity,
   stockId, stageOf, stageLabel, STOCK_STAGES, normalizeReceipt, acceptedOf
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { uploadFiles } from "./uploads.js";
+import { uploadFiles } from "./uploads.js?v=20261010b";
 
 const page = await initPage("inventory");
 if (page) start();

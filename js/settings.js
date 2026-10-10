@@ -2,8 +2,8 @@ import {
   db, reportError, auth, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, busy, formValues, isAdmin,
   listCollection, logActivity, fmtDateTime, isoDate, NUMBER_FORMATS, NUMBER_LABELS, badge,
   numberFormatOf, numberPadOf, applyNumberFormat, isMonthlyFormat, numberPeriod, numberPeriodLabel
-} from "./core.js";
-import { USING_EMULATOR } from "./firebase-config.js";
+} from "./core.js?v=20261010b";
+import { USING_EMULATOR } from "./firebase-config.js?v=20261010b";
 import { doc, runTransaction, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {

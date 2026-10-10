@@ -19,7 +19,7 @@ ServerSignature Off
     Header always set Cross-Origin-Opener-Policy "same-origin-allow-popups"
     Header always unset X-Powered-By
     # Pages and API answers must not be cached by shared proxies
-    <FilesMatch "\.(html|php)$">
+    <FilesMatch "\.(html|php|js|css)$">
         Header always set Cache-Control "private, no-cache, must-revalidate"
     </FilesMatch>
 </IfModule>

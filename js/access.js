@@ -2,7 +2,7 @@
 // the database rules enforce the same restriction for the sessions data).
 import {
   db, initPage, pageHeader, esc, toast, listCollection, fmtDateTime, isoDate, toDate, exportExcel, normalizeReceipt, qty
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { collection, getDocs, limit, orderBy, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const page = await initPage("access", { superAdminOnly: true });

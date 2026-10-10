@@ -1,5 +1,5 @@
 // "Needs attention" rules shared by the Exceptions page and the Dashboard.
-import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate, isOnHold, HOLD_TEXT, acceptedOf, isServicePo } from "./core.js";
+import { OPEN_PO_STATUSES, normalizeReceipt, isoDate, toDate, qty, round, fmtDate, isOnHold, HOLD_TEXT, acceptedOf, isServicePo } from "./core.js?v=20261010b";
 
 const n = (v) => Number(v) || 0;
 const daysSince = (value) => { const d = toDate(value) || (typeof value === "string" ? new Date(`${value}T00:00:00`) : null); return d ? Math.floor((Date.now() - d.getTime()) / 86400000) : 0; };

@@ -3,7 +3,7 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, badge, busy, formValues, can,
   listCollection, logActivity, loadSettings, qty
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const page = await initPage("warehouses");

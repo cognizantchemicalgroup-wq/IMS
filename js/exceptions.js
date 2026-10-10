@@ -1,6 +1,6 @@
 // Exceptions: only the things that need attention today.
-import { initPage, pageHeader, esc, state, listCollection, exportExcel, isoDate, toast } from "./core.js";
-import { computeExceptions } from "./exceptions-data.js";
+import { initPage, pageHeader, esc, state, listCollection, exportExcel, isoDate, toast } from "./core.js?v=20261010b";
+import { computeExceptions } from "./exceptions-data.js?v=20261010b";
 
 const page = await initPage("exceptions");
 if (page) start();

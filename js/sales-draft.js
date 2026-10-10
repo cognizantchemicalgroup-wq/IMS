@@ -1,5 +1,5 @@
 // Switching a new Sales Order ⇄ Proforma Invoice keeps what was already entered.
-import { esc } from "./core.js";
+import { esc } from "./core.js?v=20261010b";
 
 const DRAFT_KEY = "ccpl-sales-draft";
 

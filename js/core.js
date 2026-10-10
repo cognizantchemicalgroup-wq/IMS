@@ -1,6 +1,6 @@
 // Shared runtime for every ERP page: auth guard, layout shell, formatting,
 // document numbering, stock movements and the activity (audit) log.
-import { auth, db, USING_EMULATOR } from "./firebase-config.js";
+import { auth, db, USING_EMULATOR } from "./firebase-config.js?v=20261010b";
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection, doc, getDoc, getDocs, query, orderBy, serverTimestamp, Timestamp, setDoc, updateDoc

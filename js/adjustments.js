@@ -4,9 +4,9 @@ import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, qty, fmtDate, fmtDateTime, isoDate, round, reserveNumber, commitNumber,
   warehouseByCode, warehouseOptions, readStock, applyMovements, exportExcel, stockId, stageOf, stageLabel
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { collection, doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { uploadFiles, docLinks } from "./uploads.js";
+import { uploadFiles, docLinks } from "./uploads.js?v=20261010b";
 
 const TYPES = [
   ["Damaged", -1], ["Destroyed", -1], ["Leakage / Spillage", -1], ["Expired", -1], ["QC Rejected", -1], ["Sample / Consumed", -1],

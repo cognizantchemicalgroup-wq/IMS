@@ -5,11 +5,11 @@ import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, confirmDialog, badge, busy, formValues, can, isAdmin,
   listCollection, logActivity, money, qty, fmtDate, fmtDateTime, isoDate, addDays, round, computeTotals,
   reserveNumber, commitNumber, exportExcel, STATE_CODES
-} from "./core.js";
-import { termsDays, normalizeTerms, partyTerms, termsDatalist, isServiceItem } from "./core.js";
-import { createLineEditor } from "./line-editor.js";
-import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js";
-import { piSpec, showDocument, safeFileName } from "./pdf.js";
+} from "./core.js?v=20261010b";
+import { termsDays, normalizeTerms, partyTerms, termsDatalist, isServiceItem } from "./core.js?v=20261010b";
+import { createLineEditor } from "./line-editor.js?v=20261010b";
+import { docTypeField, partyOption, openOtherType, takeDraft } from "./sales-draft.js?v=20261010b";
+import { piSpec, showDocument, safeFileName } from "./pdf.js?v=20261010b";
 import { collection, doc, runTransaction, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const FROM_SO_KEY = "ccpl-pi-from-so";

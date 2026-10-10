@@ -5,7 +5,7 @@ import {
   db, reportError, initPage, pageHeader, esc, toast, openModal, badge, busy, formValues, can,
   listCollection, logActivity, loadXLSX, exportExcel, downloadBlob, isoDate, GSTIN_PATTERN, STATE_CODES, ITEM_CATEGORIES, UNITS, PARTY_TYPES,
   normalizeTerms, termsDays, partyTerms, termsDatalist
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { collection, doc, runTransaction, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const PARTY_FIELDS = [

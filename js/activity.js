@@ -1,5 +1,5 @@
 // Daily log: every action in the ERP, to the second, with who did it. Read-only (cannot be edited or deleted).
-import { db, initPage, pageHeader, esc, toast, fmtDateTime, isoDate, exportExcel } from "./core.js";
+import { db, initPage, pageHeader, esc, toast, fmtDateTime, isoDate, exportExcel } from "./core.js?v=20261010b";
 import { collection, getDocs, orderBy, query, where, Timestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const page = await initPage("activity");

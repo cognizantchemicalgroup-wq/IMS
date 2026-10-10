@@ -1,5 +1,5 @@
-import { auth, storage } from "./firebase-config.js";
-import { esc, toast } from "./core.js";
+import { auth, storage } from "./firebase-config.js?v=20261010b";
+import { esc, toast } from "./core.js?v=20261010b";
 import { ref, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 const MAX_BYTES = 10 * 1024 * 1024;

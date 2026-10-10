@@ -14,9 +14,9 @@ import {
   warehouseByCode, warehouseOptions, deriveOrderStatus, readStock, applyMovements, exportExcel, OPEN_PO_STATUSES, CLOSED_PO_STATUSES, normalizeReceipt,
   TRANSPORT_MODES, accountsBadge, accountsStatus, isOnHold, isPartlyRejected, receiptStageLabel, transportText, HOLD_TEXT,
   fmtDiff, diffColor, acceptedOf, isServicePo, isServiceItem, poLineQty
-} from "./core.js";
+} from "./core.js?v=20261010b";
 import { collection, doc, runTransaction, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { uploadFiles, docLinks } from "./uploads.js";
+import { uploadFiles, docLinks } from "./uploads.js?v=20261010b";
 
 const page = await initPage("inward");
 if (page) start();

@@ -4,9 +4,9 @@
 import {
   db, reportError, state, initPage, pageHeader, esc, toast, openModal, busy, logActivity, qty, fmtDateTime,
   downloadBlob, NUMBER_LABELS, isSuperAdmin
-} from "./core.js";
-import { storage, auth } from "./firebase-config.js";
-import { openPrivateFile } from "./uploads.js";
+} from "./core.js?v=20261010b";
+import { storage, auth } from "./firebase-config.js?v=20261010b";
+import { openPrivateFile } from "./uploads.js?v=20261010b";
 import {
   collection, doc, getDoc, getDocs, setDoc, deleteDoc, writeBatch, query, limit, getCountFromServer, serverTimestamp,
   Timestamp, GeoPoint, Bytes, DocumentReference
@@ -217,7 +217,7 @@ async function start() {
   let running = false;
   window.addEventListener("beforeunload", (e) => { if (running) { e.preventDefault(); e.returnValue = ""; } });
 
-  page.innerHTML = `${pageHeader("Admin", "Backup, Fresh Start & Restore", "Only for the super admin. Every reset or restore needs the separate reset password and always takes a full backup first.")}
+  page.innerHTML = `${pageHeader("Admin", "Backup, Fresh Start & Restore", "Only for the super admin. Every reset or restore needs the separate reset password and always takes a full backup first. (Page version 2026-10-10b)")}
     <div class="card" id="pwCard"></div>
     <div id="pauseCard"></div>
     <div class="grid cols-3" style="margin-bottom:16px">

@@ -1,5 +1,5 @@
 // Editable item lines with live GST totals, shared by PO, Quotation and Sales Order.
-import { esc, money, computeTotals, round } from "./core.js";
+import { esc, money, computeTotals, round } from "./core.js?v=20261010b";
 
 const newLineId = () => Math.random().toString(36).slice(2, 10);
 

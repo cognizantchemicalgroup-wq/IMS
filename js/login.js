@@ -1,9 +1,9 @@
-import { auth, db, USING_EMULATOR } from "./firebase-config.js";
+import { auth, db, USING_EMULATOR } from "./firebase-config.js?v=20261010b";
 import {
   onAuthStateChanged, signInWithEmailAndPassword, signInWithCustomToken, signOut, sendPasswordResetEmail, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { startSession } from "./core.js";
+import { startSession } from "./core.js?v=20261010b";
 
 // DOM elements
 const loginForm = document.getElementById("loginForm");

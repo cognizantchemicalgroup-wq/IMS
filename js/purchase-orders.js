@@ -5,9 +5,9 @@ import {
   OPEN_PO_STATUSES, normalizeReceipt, PO_SERIES, cleanPoNo, poNumberKey, poNoProblem, PO_NO_DUPLICATE_MSG, PO_NO_NONE_MSG, PO_NO_MAX, accountsBadge, isOnHold, receiptStageLabel,
   TRANSPORT_MODES, HOLD_TEXT, CLOSED_PO_STATUSES, poLineQty, fmtDiff, diffColor, acceptedOf, isServicePo, isServiceItem,
   partyTerms, termsDatalist
-} from "./core.js";
-import { createLineEditor } from "./line-editor.js";
-import { poSpec, showDocument, safeFileName } from "./pdf.js";
+} from "./core.js?v=20261010b";
+import { createLineEditor } from "./line-editor.js?v=20261010b";
+import { poSpec, showDocument, safeFileName } from "./pdf.js?v=20261010b";
 import { arrayUnion, collection, doc, getDoc, runTransaction, serverTimestamp, query, where, getDocs, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const n = (v) => Number(v) || 0;
