@@ -139,15 +139,24 @@ async function buildBackup(reason, onStep = () => {}) {
   };
   return { file, text: JSON.stringify(file), filename: `CCPL-backup-${stamp()}-${reason}.json` };
 }
-/** Takes a full backup, downloads it AND keeps a copy in the cloud. Throws if the cloud copy fails. */
+/**
+ * Takes a full backup and downloads it to this device. A cloud copy is also attempted, but it is optional:
+ * Firebase Storage may be unavailable (e.g. "quota exceeded" on the free plan), and the downloaded file is enough to restore.
+ */
 async function takeBackup(reason, onStep = () => {}) {
   const backup = await buildBackup(reason, onStep);
   const blob = new Blob([backup.text], { type: "application/json" });
   onStep(`Downloading ${backup.filename} (${kb(blob.size)})…`);
   downloadBlob(blob, backup.filename);
   onStep("Saving a copy in the cloud…");
-  await uploadBytes(ref(storage, `backups/${backup.filename}`), blob, { contentType: "application/json" });
-  return { ...backup, size: blob.size };
+  let cloud = true;
+  try {
+    await uploadBytes(ref(storage, `backups/${backup.filename}`), blob, { contentType: "application/json" });
+  } catch (error) {
+    console.warn("Cloud copy of the backup failed", error);
+    cloud = false;
+  }
+  return { ...backup, size: blob.size, cloud, where: cloud ? "downloaded and saved in the cloud" : "downloaded to this device (cloud copy not available — keep the file safe)" };
 }
 
 /* ---------------- Bulk delete / write ---------------- */
@@ -343,7 +352,7 @@ async function start() {
     run.begin("Backup", 2);
     try {
       const b = await takeBackup("manual", (t) => run.step(t));
-      run.next(`Backup <b>${esc(b.filename)}</b> (${kb(b.size)}) downloaded and saved in the cloud.`);
+      run.next(`Backup <b>${esc(b.filename)}</b> (${kb(b.size)}) ${esc(b.where)}.`);
       const batch = writeBatch(db);
       logActivity(batch, { module: "Data", action: "BACKUP", refNo: b.filename, summary: `Full backup ${b.filename}: ${Object.entries(b.file.counts).map(([k, v]) => `${LABEL[k]} ${v}`).join(", ")}` });
       await batch.commit();
@@ -401,9 +410,11 @@ async function start() {
         <div class="section-title">Restart document numbers</div>
         ${counters.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Document</th><th>Period</th><th class="num">Next now</th><th class="num" style="width:140px">Restart at</th></tr></thead><tbody>
           ${counters.map((c) => `<tr><td>${esc(NUMBER_LABELS[c.type] || c.type || c.id)}</td><td class="small">${esc(c.fy || "")}</td><td class="num">${esc(c.next)}</td><td><input type="number" min="1" step="1" class="num" data-counter="${esc(c.id)}" value="${esc(c.setNext || 1)}" /></td></tr>`).join("")}</tbody></table></div>` : '<p class="small muted">No counters yet.</p>'}
+        ${files.error ? `<div class="notice error" style="margin-top:12px"><i class="fa-solid fa-triangle-exclamation"></i><div>File storage is not available (${esc(files.error)}). You can still reset: all records are deleted from the database; attachment files are skipped (they stay private and can no longer be opened). Make sure you keep the downloaded backup file.
+          <label class="small" style="display:block;margin-top:8px"><input type="checkbox" name="skipFiles" /> <b>Continue without attachments</b></label></div></div>` : ""}
         <label class="small" style="display:block;margin:12px 0 6px"><input type="checkbox" name="approve" /> I have reviewed the scope above and approve deleting these records.</label>
         <div class="form-grid" style="margin-top:12px">
-          <label class="field"><span>Type <b>RESET</b> to confirm</span><input name="confirmWord" autocomplete="off" /></label>
+          <label class="field"><span>Type <b>RESET</b> to confirm</span><input name="confirmWord" type="search" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="RESET" data-lpignore="true" /></label>
           <label class="field"><span>Reset password</span><input type="password" name="pw" autocomplete="off" /></label>
         </div></form>`,
       footer: '<button class="btn" data-close>Cancel</button><button class="btn danger" id="rsGo"><i class="fa-solid fa-broom"></i> Pause, back up &amp; reset</button>'
@@ -411,9 +422,10 @@ async function start() {
     const f = modal.el.querySelector("#rsForm");
     modal.el.querySelector("#rsGo").addEventListener("click", async () => {
       const restartAt = [...f.querySelectorAll("[data-counter]")].map((i) => ({ id: i.dataset.counter, next: Number(i.value) }));
-      if (files.error) { toast("The attachment service is not reachable, so attachments cannot be backed up. Fix it before resetting.", "error"); return; }
+      const withFiles = !files.error && files.count > 0;
+      if (files.error && !f.skipFiles?.checked) { toast("File storage is not available. Tick \"Continue without attachments\" to reset anyway.", "error"); return; }
       if (!f.approve.checked) { toast("Tick the approval box after reviewing the scope.", "error"); return; }
-      if (f.confirmWord.value.trim() !== "RESET") { toast("Type RESET to confirm.", "error"); return; }
+      if (f.confirmWord.value.trim().toUpperCase() !== "RESET") { toast("Type RESET to confirm.", "error"); return; }
       if (restartAt.some((c) => !Number.isInteger(c.next) || c.next < 1)) { toast("Restart numbers must be whole numbers from 1.", "error"); return; }
       if (lockedOut()) { toast("Too many wrong attempts — wait 15 minutes.", "error"); return; }
       const pw = f.pw.value;
@@ -429,11 +441,13 @@ async function start() {
         await renderPause();
         run.next("Data entry paused for all users.");
         const b = await takeBackup("before-golive-reset", (t) => run.step(t));
-        run.next(`Backup <b>${esc(b.filename)}</b> downloaded and saved privately in the cloud.`);
+        run.next(`Backup <b>${esc(b.filename)}</b> ${esc(b.where)}.`);
         const fileStamp = b.filename.match(/(\d{8}-\d{6})/)[1];
-        run.step("Copying attachments to the private backup folder…");
-        const copied = await storageAdmin({ action: "backup", stamp: fileStamp });
-        run.next(`Attachments: ${qty(copied.copied)} copied to <span class="mono">${esc(copied.folder)}</span>.`);
+        if (withFiles) {
+          run.step("Copying attachments to the private backup folder…");
+          const copied = await storageAdmin({ action: "backup", stamp: fileStamp });
+          run.next(`Attachments: ${qty(copied.copied)} copied to <span class="mono">${esc(copied.folder)}</span>.`);
+        } else run.next("Attachments skipped (file storage not available). Their records are deleted; any leftover files stay private and unreachable.");
         const deleted = {};
         for (const name of RESET_COLLS) {
           run.step(`${LABEL[name]}: deleting…`);
@@ -441,9 +455,12 @@ async function start() {
           run.next(`${esc(LABEL[name])}: ${qty(deleted[name])} deleted.`);
         }
         await keepGrant();
-        run.step("Deleting attachments…");
-        const removed = await storageAdmin({ action: "delete", stamp: fileStamp });
-        run.next(`Attachments: ${qty(removed.deleted)} deleted (copies kept in the backup).`);
+        let removed = { deleted: 0 };
+        if (withFiles) {
+          run.step("Deleting attachments…");
+          removed = await storageAdmin({ action: "delete", stamp: fileStamp });
+          run.next(`Attachments: ${qty(removed.deleted)} deleted (copies kept in the backup).`);
+        } else run.next();
         if (restartAt.length) {
           const batch = writeBatch(db);
           restartAt.forEach((c) => batch.set(doc(db, "counters", c.id), { next: c.next, updatedAt: serverTimestamp() }, { merge: true }));
@@ -453,11 +470,11 @@ async function start() {
         run.step("Verifying…");
         const left = (await Promise.all(RESET_COLLS.map(async (c) => [c, await countOf(c)]))).filter(([, n]) => n !== 0);
         if (left.length) throw new Error(`Some records are still there: ${left.map(([c, n]) => `${LABEL[c]} ${n ?? "?"}`).join(", ")}. Run the reset again (data entry stays paused).`);
-        const filesLeft = (await storageAdmin({ action: "count" })).count;
+        const filesLeft = withFiles ? (await storageAdmin({ action: "count" })).count : 0;
         if (filesLeft) throw new Error(`${filesLeft} attachment(s) are still there. Run the reset again (data entry stays paused).`);
         const itemsAfter = await countOf("items");
         if (itemsAfter !== itemsBefore) throw new Error(`Item master check failed: ${itemsBefore} before, ${itemsAfter} after. Restore from ${b.filename}.`);
-        run.next(`Verified: no business records, stock balances or attachments left; item master intact (${qty(itemsAfter)} items).`);
+        run.next(`Verified: no business records or stock balances left${withFiles ? ", no attachments" : ""}; item master intact (${qty(itemsAfter)} items).`);
         const batch = writeBatch(db);
         logActivity(batch, { module: "Data", action: "GO-LIVE RESET", refNo: b.filename, summary: `Go-live reset by ${state.user.email}: deleted ${Object.entries(deleted).map(([k, v]) => `${LABEL[k]} ${v}`).join(", ")}, attachments ${removed.deleted} · item master kept (${itemsAfter}). Backup: ${b.filename}` });
         await batch.commit();
@@ -528,7 +545,7 @@ async function start() {
         await openGrant(pw, "restore");
         run.next("Reset password accepted.");
         const b = await takeBackup("before-restore", (t) => run.step(t));
-        run.next(`Current data backed up as <b>${esc(b.filename)}</b> (downloaded and saved in the cloud).`);
+        run.next(`Current data backed up as <b>${esc(b.filename)}</b> (${esc(b.where)}).`);
         for (const name of WIPEABLE) {
           run.step(`${LABEL[name]}: clearing…`);
           const n = await wipe(name, (t) => run.step(t));
